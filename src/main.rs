@@ -1,9 +1,11 @@
 #![no_std]
 #![no_main]
 
+mod csr;
 mod panic;
 mod print;
 mod sbi;
+mod trap;
 
 use core::arch::global_asm;
 
@@ -18,7 +20,13 @@ unsafe extern "C" {
 extern "C" fn rust_main() -> ! {
     clear_bss();
 
+    trap::init_trap();
+
     info!("minimal kernel started.");
+
+    unsafe {
+        core::arch::asm!(".word 0");
+    }
 
     loop {
         unsafe {

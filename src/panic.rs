@@ -2,7 +2,7 @@ use core::panic::PanicInfo;
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    crate::println!("panic: {}", info);
+    crate::error!("panic: {}", info);
 
     loop {
         unsafe {
