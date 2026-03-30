@@ -34,3 +34,18 @@ macro_rules! println {
         $crate::print!(concat!($fmt, "\n"), $($arg)*)
     };
 }
+
+#[macro_export]
+macro_rules! info {
+    ($($arg:tt)*) => ($crate::print!("\x1b[32m[INFO]\x1b[0m {}:{:<3}: {}\n", file!(), line!(), format_args!($($arg)*)));
+}
+
+#[macro_export]
+macro_rules! warn {
+    ($($arg:tt)*) => ($crate::print!("\x1b[33m[WARN]\x1b[0m {}:{:<3}: {}\n", file!(), line!(), format_args!($($arg)*)));
+}
+
+#[macro_export]
+macro_rules! error {
+    ($($arg:tt)*) => ($crate::print!("\x1b[31m[ERROR]\x1b[0m {}:{:<3}: {}\n", file!(), line!(), format_args!($($arg)*)));
+}

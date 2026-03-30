@@ -18,8 +18,7 @@ unsafe extern "C" {
 extern "C" fn rust_main() -> ! {
     clear_bss();
 
-    println!("Hello, RISC-V!");
-    println!("minimal kernel started.");
+    info!("minimal kernel started.");
 
     loop {
         unsafe {
