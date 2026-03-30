@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -eu
+
+cargo build
+
+qemu-system-riscv64 \
+  -machine virt \
+  -bios default \
+  -nographic \
+  -serial mon:stdio \
+  -kernel target/riscv64gc-unknown-none-elf/debug/os2026
