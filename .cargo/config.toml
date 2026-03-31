@@ -1,6 +1,8 @@
 [build]
 target = "riscv64gc-unknown-none-elf"
+
 [target.riscv64gc-unknown-none-elf]
+runner = "./scripts/run.sh"
 rustflags = [
   "-C", "link-arg=-Tlinker/kernel.ld",
 ]
