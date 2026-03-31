@@ -5,20 +5,20 @@ SECTIONS
 {
   . = 0x80200000;
 
-  .text : ALIGN(4K) {
+  .text : ALIGN(16) {
     *(.text.entry)
     *(.text .text.*)
   }
 
-  .rodata : ALIGN(4K) {
+  .rodata : ALIGN(16) {
     *(.rodata .rodata.*)
   }
 
-  .data : ALIGN(4K) {
+  .data : ALIGN(16) {
     *(.data .data.*)
   }
 
-  .bss : ALIGN(4K) {
+  .bss : ALIGN(16) {
     __bss_start = .;
     *(.bss .bss.*)
     *(COMMON)
@@ -27,4 +27,9 @@ SECTIONS
 
   . = ALIGN(16);
   __stack_top = . + 64K;
+
+  . = ALIGN(16);
+  __heap_start = .;
+  . += 128K;
+  __heap_end = .;
 }
