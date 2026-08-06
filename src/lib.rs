@@ -5,13 +5,12 @@
 #![reexport_test_harness_main = "test_main"]
 #![feature(alloc_error_handler)]
 
-pub mod allocator;
-pub mod csr;
+pub mod arch;
 pub mod init;
+pub mod memory;
 pub mod panic;
+pub mod platform;
 pub mod print;
-pub mod sbi;
-pub mod trap;
 
 #[cfg(test)]
 mod test_runner;

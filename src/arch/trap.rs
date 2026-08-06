@@ -1,8 +1,8 @@
-use crate::csr::{read_scause, read_sepc, read_stval, write_sepc, write_stvec};
+use crate::arch::csr::{read_scause, read_sepc, read_stval, write_sepc, write_stvec};
 use crate::error;
 use core::arch::global_asm;
 
-global_asm!(include_str!("../boot/trap.S"));
+global_asm!(include_str!("../../boot/trap.S"));
 
 unsafe extern "C" {
     fn kernel_entry_trap();

@@ -1,5 +1,5 @@
 PROJECT := os2026
-TARGET := riscv64gc-unknown-none-elf
+TARGET := riscv64imac-unknown-none-elf
 PROFILE ?= release
 
 KERNEL := target/$(TARGET)/$(PROFILE)/$(PROJECT)
@@ -29,7 +29,7 @@ run: $(KERNEL) ## Run the kernel with QEMU
 
 test: ## Run kernel tests with QEMU
 	RUSTFLAGS="$(RUSTFLAGS)" \
-	CARGO_TARGET_RISCV64GC_UNKNOWN_NONE_ELF_RUNNER=./scripts/run.sh \
+	CARGO_TARGET_RISCV64IMAC_UNKNOWN_NONE_ELF_RUNNER=./scripts/run.sh \
 	cargo test --target $(TARGET) --lib
 
 clean: ## Remove build artifacts

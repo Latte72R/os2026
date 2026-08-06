@@ -5,7 +5,7 @@ struct Console;
 impl Write for Console {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for b in s.bytes() {
-            crate::sbi::putchar(b);
+            crate::platform::putchar(b);
         }
         Ok(())
     }

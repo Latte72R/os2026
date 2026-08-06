@@ -22,5 +22,5 @@ pub fn test_runner(tests: &[&dyn Testable]) {
         test.run();
     }
     crate::println!("Completed {} tests!", tests.len());
-    crate::sbi::shutdown(true);
+    crate::platform::shutdown(true);
 }
