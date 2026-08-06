@@ -4,7 +4,7 @@
 
 Rustで実装された，RV64IMAC 向けのシンプルなOSです．
 
-現在は，OpenSBIを介したコンソール出力，例外処理，Bump Allocatorによる動的メモリ確保を実装しています．
+現在は，OpenSBIを介したコンソール出力，例外処理，First Fit Allocator による動的メモリ確保を実装しています．
 
 ## 必要なツール
 
