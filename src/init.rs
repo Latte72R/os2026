@@ -1,10 +1,6 @@
 use crate::arch::trap::init_trap;
-use crate::memory::BumpAllocator;
 
 use core::arch::global_asm;
-
-#[global_allocator]
-static ALLOCATOR: BumpAllocator = BumpAllocator::new();
 
 global_asm!(include_str!("../boot/entry.S"));
 
@@ -15,11 +11,10 @@ unsafe extern "C" {
 
 pub fn init_basic_runtime() {
     clear_bss();
-
     init_trap();
 
     unsafe {
-        ALLOCATOR.init();
+        crate::memory::ALLOCATOR.init();
     }
 }
 

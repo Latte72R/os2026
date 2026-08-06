@@ -1,3 +1,2 @@
-pub mod bump;
-
-pub use bump::BumpAllocator;
+pub mod first_fit;
+pub use first_fit::ALLOCATOR;
