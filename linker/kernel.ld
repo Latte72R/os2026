@@ -4,6 +4,7 @@ ENTRY(_start)
 SECTIONS
 {
   . = 0x80200000;
+  __kernel_base = .;
 
   .text : ALIGN(16) {
     *(.text.entry)
@@ -26,10 +27,11 @@ SECTIONS
   }
 
   . = ALIGN(16);
-  __stack_top = . + 64K;
+  . += 64K;
+  __stack_top = .;
 
-  . = ALIGN(16);
+  . = ALIGN(4096);
   __heap_start = .;
-  . += 32M;
+  . += 8M;
   __heap_end = .;
 }

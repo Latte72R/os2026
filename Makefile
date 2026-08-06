@@ -1,4 +1,4 @@
-PROJECT := os2026
+PROJECT := vertos
 TARGET := riscv64imac-unknown-none-elf
 PROFILE ?= release
 

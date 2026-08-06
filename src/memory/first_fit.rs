@@ -43,8 +43,6 @@ const _: () = assert!(HEADER_SIZE == 32);
 
 const _: () = assert!(HEADER_SIZE.count_ones() == 1);
 
-pub const LAYOUT_PAGE_4K: Layout = unsafe { Layout::from_size_align_unchecked(4096, 4096) };
-
 impl Header {
     fn can_provide(&self, size: usize, align: usize) -> bool {
         self.size >= size + HEADER_SIZE * 2 + align
@@ -57,6 +55,8 @@ impl Header {
     }
     unsafe fn new_from_addr(addr: usize) -> Box<Header> {
         let header = addr as *mut Header;
+
+        // SAFETY:
         // The caller guarantees that `addr` is properly aligned,
         // writable for `HEADER_SIZE` bytes, and not currently occupied
         // by another live value.
@@ -71,6 +71,7 @@ impl Header {
         }
     }
     unsafe fn from_allocated_region(addr: *mut u8) -> Box<Header> {
+        // SAFETY:
         // The caller guarantees that `addr` was returned by this
         // allocator and is preceded by a valid Header.
         unsafe {
@@ -144,6 +145,7 @@ unsafe impl GlobalAlloc for FirstFitAllocator {
         self.alloc_with_options(layout)
     }
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+        // SAFETY:
         // GlobalAlloc requires `ptr` to have been allocated by this
         // allocator and not to have been deallocated already.
         let mut region = unsafe { Header::from_allocated_region(ptr) };
