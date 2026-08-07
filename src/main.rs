@@ -37,11 +37,11 @@ extern "C" fn rust_main() -> ! {
 
     vertos::info!(
         "PID {pid_a} state: {:?}",
-        vertos::process::process_state(pid_a)
+        vertos::process::try_wait_process(pid_a)
     );
     vertos::info!(
         "PID {pid_b} state: {:?}",
-        vertos::process::process_state(pid_b)
+        vertos::process::try_wait_process(pid_b)
     );
 
     vertos::info!("processes finished, halting CPU.");
