@@ -1,4 +1,5 @@
 extern crate alloc;
+
 use crate::arch::context::{initialize_stack, switch_context};
 use crate::memory::Pages;
 use crate::mutex::Mutex;
@@ -7,10 +8,13 @@ use alloc::vec::Vec;
 const KERNEL_STACK_PAGES: usize = 2;
 const PROCESSES_MAX: usize = 8;
 
+pub type ProcessEntry = extern "C" fn() -> isize;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessState {
     Idle,
     Runnable,
+    Exited(isize),
 }
 
 #[derive(Debug)]
@@ -19,18 +23,20 @@ pub struct Process {
     state: ProcessState,
     sp: usize,
     stack: Option<Pages>,
+    entry: Option<ProcessEntry>,
 }
 
 impl Process {
-    pub fn new(pid: usize, entry: extern "C" fn() -> !) -> Option<Self> {
+    pub fn new(pid: usize, entry: ProcessEntry) -> Option<Self> {
         let mut stack = Pages::alloc(KERNEL_STACK_PAGES)?;
-        let sp = initialize_stack(&mut stack, entry)?;
+        let sp = initialize_stack(&mut stack, process_entry_trampoline)?;
 
         Some(Self {
             pid,
             state: ProcessState::Runnable,
             sp,
             stack: Some(stack),
+            entry: Some(entry),
         })
     }
 
@@ -40,6 +46,7 @@ impl Process {
             state: ProcessState::Idle,
             sp: 0,
             stack: None,
+            entry: None,
         }
     }
 
@@ -104,7 +111,7 @@ impl ProcessManager {
         }
     }
 
-    fn create_process(&mut self, entry: extern "C" fn() -> !) -> Option<usize> {
+    fn create_process(&mut self, entry: extern "C" fn() -> isize) -> Option<usize> {
         if self.processes.len() >= PROCESSES_MAX {
             return None;
         }
@@ -182,7 +189,7 @@ pub fn init() {
     *root = Some(ProcessManager::new());
 }
 
-pub fn create_process(entry: extern "C" fn() -> !) -> Option<usize> {
+pub fn create_process(entry: extern "C" fn() -> isize) -> Option<usize> {
     let mut root = ROOT_PROCESS_MANAGER.lock();
     let manager = root.as_mut()?;
 
@@ -209,85 +216,143 @@ pub fn yield_process() {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::arch::context::CONTEXT_SIZE;
-    use crate::process::{Process, ProcessManager, ProcessState};
+fn current_process_entry() -> ProcessEntry {
+    let root = ROOT_PROCESS_MANAGER.lock();
+    let manager = root.as_ref().expect("process manager is not initialized");
+    let current = &manager.processes[manager.current];
 
-    extern "C" fn test_entry() -> ! {
-        loop {
-            core::hint::spin_loop();
+    current
+        .entry
+        .expect("current process has no entry function")
+}
+
+extern "C" fn process_entry_trampoline() -> ! {
+    let entry = current_process_entry();
+    let exit_code = entry();
+
+    exit_process(exit_code);
+}
+
+pub fn exit_process(exit_code: isize) -> ! {
+    let switch_info = {
+        let mut root = ROOT_PROCESS_MANAGER.lock();
+        let manager = root.as_mut().expect("process manager is not initialized");
+        // 現在ProcessをExited(exit_code)にする
+        let current = &mut manager.processes[manager.current];
+        current.state = ProcessState::Exited(exit_code);
+        // 次のRunnable Processを選ぶ
+        manager.prepare_yield()
+    };
+
+    // switch_contextする
+    if let Some(switch_info) = switch_info {
+        // SAFETY:
+        // - prepare_yield returned pointers to valid Process::sp fields.
+        // - Processes are stored in a preallocated Vec and are not removed.
+        // - The ProcessManager lock has been released before switching.
+        unsafe {
+            switch_context(switch_info.previous_sp_ptr, switch_info.next_sp_ptr);
         }
     }
 
+    panic!("exited process was resumed");
+}
+
+pub fn process_state(pid: usize) -> Option<ProcessState> {
+    let root = ROOT_PROCESS_MANAGER.lock();
+    let manager = root.as_ref()?;
+
+    manager.processes.get(pid).map(|process| process.state())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::arch::context::CONTEXT_SIZE;
+
+    extern "C" fn return_zero() -> isize {
+        0
+    }
+
+    extern "C" fn return_ten() -> isize {
+        10
+    }
+
     #[test_case]
-    fn process_has_initialized_kernel_stack() {
-        let process = Process::new(1, test_entry).expect("failed to create process");
+    fn idle_and_normal_processes_are_initialized() {
+        // プロセスが正しく初期化されているかを確認するテスト
+
+        let manager = ProcessManager::new();
+        let idle = &manager.processes[0];
+
+        assert_eq!(idle.pid(), 0);
+        assert_eq!(idle.state(), ProcessState::Idle);
+        assert_eq!(idle.stack_start(), None);
+        assert_eq!(manager.current_pid(), 0);
+
+        let process = Process::new(1, return_zero).expect("failed to create process");
 
         let sp = process.stack_pointer();
+        let stack_start = process
+            .stack_start()
+            .expect("normal process must have a kernel stack");
+        let stack_end = process
+            .stack_end()
+            .expect("normal process must have a kernel stack");
 
         assert_eq!(process.pid(), 1);
         assert_eq!(process.state(), ProcessState::Runnable);
         assert_eq!(sp % 16, 0);
-        let stack_start = process
-            .stack_start()
-            .expect("normal process must have a kernel stack");
-
-        let stack_end = process
-            .stack_end()
-            .expect("normal process must have a kernel stack");
         assert!(stack_start <= sp);
         assert!(sp + CONTEXT_SIZE <= stack_end);
     }
 
     #[test_case]
-    fn rust_main_is_idle_process() {
-        let manager = ProcessManager::new();
+    fn process_manager_schedules_round_robin() {
+        // プロセスがラウンドロビンスケジューリングされることを確認するテスト
 
-        assert_eq!(manager.current_pid(), 0);
-    }
-
-    #[test_case]
-    fn process_manager_creates_processes() {
         let mut manager = ProcessManager::new();
 
         let pid1 = manager
-            .create_process(test_entry)
+            .create_process(return_zero)
             .expect("failed to create process 1");
 
         let pid2 = manager
-            .create_process(test_entry)
+            .create_process(return_zero)
             .expect("failed to create process 2");
 
         assert_eq!(pid1, 1);
         assert_eq!(pid2, 2);
         assert_eq!(manager.process_count(), 3);
+
+        // PID 0 → PID 1
+        assert_eq!(manager.next_runnable_index(), 1);
+
+        // PID 1 → PID 2
+        manager.current = 1;
+        assert_eq!(manager.next_runnable_index(), 2);
+
+        // PID 2 → PID 1
+        manager.current = 2;
+        assert_eq!(manager.next_runnable_index(), 1);
     }
 
     #[test_case]
-    fn process_manager_selects_processes_round_robin() {
-        let mut manager = ProcessManager::new();
+    fn process_return_value_is_recorded() {
+        // プロセスの終了コードが正しく記録されることを確認するテスト
 
-        manager
-            .create_process(test_entry)
-            .expect("failed to create process 1");
+        let mut root = ROOT_PROCESS_MANAGER.lock();
+        *root = Some(ProcessManager::new());
+        drop(root);
 
-        manager
-            .create_process(test_entry)
-            .expect("failed to create process 2");
+        let pid = create_process(return_ten).expect("failed to create process");
 
-        // PID 0から最初に選ばれるのはPID 1
-        assert_eq!(manager.current_pid(), 0);
-        assert_eq!(manager.next_runnable_index(), 1);
+        assert_eq!(process_state(pid), Some(ProcessState::Runnable),);
 
-        // PID 1の次はPID 2
-        manager.current = 1;
-        assert_eq!(manager.current_pid(), 1);
-        assert_eq!(manager.next_runnable_index(), 2);
+        yield_process();
 
-        // PID 2の次はPID 1
-        manager.current = 2;
-        assert_eq!(manager.current_pid(), 2);
-        assert_eq!(manager.next_runnable_index(), 1);
+        assert_eq!(process_state(pid), Some(ProcessState::Exited(10)),);
+
+        assert_eq!(process_state(usize::MAX), None);
     }
 }

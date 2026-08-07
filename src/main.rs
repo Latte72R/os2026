@@ -4,18 +4,20 @@
 use vertos;
 use vertos::init;
 
-extern "C" fn process_a_entry() -> ! {
-    loop {
-        vertos::info!("A");
+extern "C" fn process_a_entry() -> isize {
+    for i in 0..3 {
+        vertos::info!("A: {i}");
         vertos::process::yield_process();
     }
+    0
 }
 
-extern "C" fn process_b_entry() -> ! {
-    loop {
-        vertos::info!("B");
+extern "C" fn process_b_entry() -> isize {
+    for i in 0..3 {
+        vertos::info!("B: {i}");
         vertos::process::yield_process();
     }
+    0
 }
 
 #[unsafe(no_mangle)]
@@ -32,6 +34,17 @@ extern "C" fn rust_main() -> ! {
     vertos::info!("created PID {pid_b}");
 
     vertos::process::yield_process();
+
+    vertos::info!(
+        "PID {pid_a} state: {:?}",
+        vertos::process::process_state(pid_a)
+    );
+    vertos::info!(
+        "PID {pid_b} state: {:?}",
+        vertos::process::process_state(pid_b)
+    );
+
+    vertos::info!("processes finished, halting CPU.");
 
     loop {
         unsafe {
