@@ -50,7 +50,7 @@ unsafe extern "C" {
     fn kernel_entry_trap();
 }
 
-pub fn init_trap() {
+pub fn init() {
     let addr = kernel_entry_trap as *const () as usize;
     write_stvec(addr);
 }

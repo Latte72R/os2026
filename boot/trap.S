@@ -47,3 +47,40 @@ kernel_entry_trap:
     # 第1引数a0として&mut TrapFrameを渡す
     mv a0, sp
     call handle_trap
+
+    ld ra,   0 * 8(sp)
+    ld gp,   1 * 8(sp)
+    ld tp,   2 * 8(sp)
+
+    ld t0,   3 * 8(sp)
+    ld t1,   4 * 8(sp)
+    ld t2,   5 * 8(sp)
+    ld t3,   6 * 8(sp)
+    ld t4,   7 * 8(sp)
+    ld t5,   8 * 8(sp)
+    ld t6,   9 * 8(sp)
+
+    ld a0,  10 * 8(sp)
+    ld a1,  11 * 8(sp)
+    ld a2,  12 * 8(sp)
+    ld a3,  13 * 8(sp)
+    ld a4,  14 * 8(sp)
+    ld a5,  15 * 8(sp)
+    ld a6,  16 * 8(sp)
+    ld a7,  17 * 8(sp)
+
+    ld s0,  18 * 8(sp)
+    ld s1,  19 * 8(sp)
+    ld s2,  20 * 8(sp)
+    ld s3,  21 * 8(sp)
+    ld s4,  22 * 8(sp)
+    ld s5,  23 * 8(sp)
+    ld s6,  24 * 8(sp)
+    ld s7,  25 * 8(sp)
+    ld s8,  26 * 8(sp)
+    ld s9,  27 * 8(sp)
+    ld s10, 28 * 8(sp)
+    ld s11, 29 * 8(sp)
+
+    ld sp, 30 * 8(sp)
+    sret

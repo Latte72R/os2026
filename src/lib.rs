@@ -14,6 +14,7 @@ pub mod mutex;
 pub mod panic;
 pub mod platform;
 pub mod print;
+pub mod process;
 
 #[cfg(test)]
 mod test_runner;
