@@ -1,9 +1,15 @@
 extern crate alloc;
 
 use crate::arch::context::{initialize_stack, switch_context};
+use crate::arch::csr::{make_satp_sv39, sfence_vma, write_satp};
 use crate::error::{Error, Result};
-use crate::memory::Pages;
+use crate::memory::{AddressSpace, PTE_R, PTE_W, PTE_X, Pages};
 use crate::mutex::Mutex;
+
+unsafe extern "C" {
+    static __kernel_base: u8;
+    static __heap_end: u8;
+}
 
 const KERNEL_STACK_PAGES: usize = 2;
 const PROCESSES_MAX: usize = 8;
@@ -24,6 +30,7 @@ pub struct Process {
     state: ProcessState,
     sp: usize,
     stack: Option<Pages>,
+    address_space: Option<AddressSpace>,
     entry: Option<ProcessEntry>,
 }
 
@@ -31,6 +38,7 @@ impl Process {
     pub fn new(pid: usize, parent_pid: Option<usize>, entry: ProcessEntry) -> Option<Self> {
         let mut stack = Pages::alloc(KERNEL_STACK_PAGES)?;
         let sp = initialize_stack(&mut stack, process_entry_trampoline)?;
+        let address_space = create_kernel_address_space()?;
 
         Some(Self {
             pid,
@@ -38,6 +46,7 @@ impl Process {
             state: ProcessState::Runnable,
             sp,
             stack: Some(stack),
+            address_space: Some(address_space),
             entry: Some(entry),
         })
     }
@@ -49,6 +58,7 @@ impl Process {
             state: ProcessState::Idle,
             sp: 0,
             stack: None,
+            address_space: None,
             entry: None,
         }
     }
@@ -95,6 +105,7 @@ impl Process {
 struct SwitchContext {
     previous_sp_ptr: *mut usize,
     next_sp_ptr: *const usize,
+    next_satp: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,11 +206,18 @@ impl ProcessManager {
         let previous_sp_ptr = core::ptr::addr_of_mut!(previous_process.sp);
         let next_sp_ptr = core::ptr::addr_of!(next_process.sp);
 
+        let next_satp = next_process
+            .address_space
+            .as_ref()
+            .map(|address_space| make_satp_sv39(address_space.root_address()))
+            .unwrap_or(0);
+
         self.current_index = next;
 
         Some(SwitchContext {
             previous_sp_ptr,
             next_sp_ptr,
+            next_satp,
         })
     }
 
@@ -215,6 +233,7 @@ impl ProcessManager {
 
             if matches!(process.state, ProcessState::Exited(_)) {
                 process.stack = None;
+                process.address_space = None;
                 process.entry = None;
                 process.sp = 0;
             }
@@ -282,6 +301,34 @@ fn release_exited_resources() {
     manager.release_exited_resources();
 }
 
+fn create_kernel_address_space() -> Option<AddressSpace> {
+    let start = core::ptr::addr_of!(__kernel_base) as usize;
+
+    let end = core::ptr::addr_of!(__heap_end) as usize;
+
+    let mut address_space = AddressSpace::new()?;
+
+    address_space.map_range(start, end, PTE_R | PTE_W | PTE_X)?;
+
+    Some(address_space)
+}
+
+fn switch_process(context: SwitchContext) {
+    sfence_vma();
+
+    // SAFETY: The next process maps the kernel and its stack.
+    unsafe {
+        write_satp(context.next_satp);
+    }
+
+    sfence_vma();
+
+    // SAFETY: Both pointers refer to stable Process slots.
+    unsafe {
+        switch_context(context.previous_sp_ptr, context.next_sp_ptr);
+    }
+}
+
 pub fn yield_process() {
     let switch_info = {
         let mut root = ROOT_PROCESS_MANAGER.lock();
@@ -289,17 +336,8 @@ pub fn yield_process() {
         manager.prepare_yield()
     };
 
-    let Some(switch_info) = switch_info else {
-        return;
-    };
-
-    // SAFETY:
-    // - prepare_yield returned pointers to valid Process::sp fields.
-    // - The ProcessManager lock has been released before switching.
-    // Processes are stored in a fixed-size array,
-    // so their slots do not move while switching contexts.
-    unsafe {
-        switch_context(switch_info.previous_sp_ptr, switch_info.next_sp_ptr);
+    if let Some(switch_info) = switch_info {
+        switch_process(switch_info);
     }
 
     release_exited_resources();
@@ -341,14 +379,7 @@ pub fn exit_process(exit_code: isize) -> ! {
 
     // switch_contextする
     if let Some(switch_info) = switch_info {
-        // SAFETY:
-        // - prepare_yield returned pointers to valid Process::sp fields.
-        // - The ProcessManager lock has been released before switching.
-        // Processes are stored in a fixed-size array,
-        // so their slots do not move while switching contexts.
-        unsafe {
-            switch_context(switch_info.previous_sp_ptr, switch_info.next_sp_ptr);
-        }
+        switch_process(switch_info);
     }
 
     panic!("exited process was resumed");
@@ -378,12 +409,21 @@ pub fn try_wait_process(child_pid: usize) -> Result<WaitResult> {
 mod tests {
     use super::*;
     use crate::arch::context::CONTEXT_SIZE;
+    use crate::arch::csr::read_satp;
+    use crate::memory::PAGE_SIZE;
 
     extern "C" fn return_zero() -> isize {
         0
     }
 
     extern "C" fn return_ten() -> isize {
+        const SATP_MODE_SHIFT: usize = 60;
+        const SATP_MODE_SV39: usize = 8;
+
+        let mode = read_satp() >> SATP_MODE_SHIFT;
+
+        assert_eq!(mode, SATP_MODE_SV39);
+
         10
     }
 
@@ -397,6 +437,7 @@ mod tests {
         assert_eq!(idle.pid(), 0);
         assert_eq!(idle.state(), ProcessState::Idle);
         assert_eq!(idle.stack_start(), None);
+        assert!(idle.address_space.is_none());
         assert_eq!(manager.current_pid(), 0);
 
         let process = Process::new(1, Some(0), return_zero).expect("failed to create process");
@@ -414,6 +455,13 @@ mod tests {
         assert_eq!(sp % 16, 0);
         assert!(stack_start <= sp);
         assert!(sp + CONTEXT_SIZE <= stack_end);
+
+        let address_space = process
+            .address_space
+            .as_ref()
+            .expect("normal process must have an address space");
+
+        assert_eq!(address_space.root_address() % PAGE_SIZE, 0);
     }
 
     #[test_case]
@@ -482,6 +530,8 @@ mod tests {
         // その後PID 0へ戻り、終了した子のスタックが解放される。
         yield_process();
 
+        assert_eq!(read_satp(), 0);
+
         {
             let root = ROOT_PROCESS_MANAGER.lock();
             let manager = root.as_ref().expect("process manager is not initialized");
@@ -495,6 +545,7 @@ mod tests {
 
             // 実行資源は解放するが、終了情報はwaitまで残す
             assert!(process.stack.is_none());
+            assert!(process.address_space.is_none());
             assert!(process.entry.is_none());
             assert_eq!(process.sp, 0);
         }

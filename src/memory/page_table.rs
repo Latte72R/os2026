@@ -78,6 +78,18 @@ impl AddressSpace {
 
         Some(())
     }
+
+    pub fn map_range(&mut self, start: usize, end: usize, flags: u64) -> Option<()> {
+        assert_eq!(start % PAGE_SIZE, 0);
+        assert_eq!(end % PAGE_SIZE, 0);
+        assert!(start <= end);
+
+        for address in (start..end).step_by(PAGE_SIZE) {
+            self.map_page(address, address, flags)?;
+        }
+
+        Some(())
+    }
 }
 
 fn vpn(virtual_address: usize, level: usize) -> usize {
