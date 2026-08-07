@@ -7,6 +7,7 @@
 
 pub mod arch;
 pub mod error;
+pub mod executor;
 pub mod init;
 pub mod memory;
 pub mod mutex;

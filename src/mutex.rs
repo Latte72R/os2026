@@ -75,6 +75,9 @@ impl<T: Sized> Mutex<T> {
         self.try_lock().expect("unimplemented!")
     }
 }
+// SAFETY: is_taken ensures exclusive access to data.
+// T must be Send because locking may transfer access between execution contexts.
+unsafe impl<T> Sync for Mutex<T> {}
 
 #[test_case]
 fn mutex_can_modify_value() {
