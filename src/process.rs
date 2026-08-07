@@ -295,8 +295,9 @@ pub fn yield_process() {
 
     // SAFETY:
     // - prepare_yield returned pointers to valid Process::sp fields.
-    // - Processes are stored in a preallocated Vec and are not removed.
     // - The ProcessManager lock has been released before switching.
+    // Processes are stored in a fixed-size array,
+    // so their slots do not move while switching contexts.
     unsafe {
         switch_context(switch_info.previous_sp_ptr, switch_info.next_sp_ptr);
     }
@@ -342,8 +343,9 @@ pub fn exit_process(exit_code: isize) -> ! {
     if let Some(switch_info) = switch_info {
         // SAFETY:
         // - prepare_yield returned pointers to valid Process::sp fields.
-        // - Processes are stored in a preallocated Vec and are not removed.
         // - The ProcessManager lock has been released before switching.
+        // Processes are stored in a fixed-size array,
+        // so their slots do not move while switching contexts.
         unsafe {
             switch_context(switch_info.previous_sp_ptr, switch_info.next_sp_ptr);
         }
@@ -445,21 +447,105 @@ mod tests {
     }
 
     #[test_case]
-    fn process_return_value_is_recorded() {
-        // プロセスの終了コードが正しく記録されることを確認するテスト
-
+    fn exited_process_is_waited_and_its_slot_is_reused() {
+        // グローバルProcessManagerをテスト用の初期状態へ戻す
         let mut root = ROOT_PROCESS_MANAGER.lock();
         *root = Some(ProcessManager::new());
         drop(root);
 
-        let pid = create_process(return_ten).expect("failed to create process");
+        // PID 0から最初の子プロセスを作る
+        let first_pid = create_process(return_ten).expect("failed to create first process");
 
-        assert_eq!(process_state(pid), Some(ProcessState::Runnable),);
+        // 作成直後の子プロセスはまだ実行中
+        match try_wait_process(first_pid) {
+            Ok(WaitResult::Running) => {}
+            other => panic!("expected Running, got {:?}", other),
+        }
 
+        // PIDとは別に、プロセステーブル上のindexを記録しておく
+        let first_index = {
+            let root = ROOT_PROCESS_MANAGER.lock();
+            let manager = root.as_ref().expect("process manager is not initialized");
+
+            manager
+                .processes
+                .iter()
+                .position(|slot| {
+                    slot.as_ref()
+                        .is_some_and(|process| process.pid == first_pid)
+                })
+                .expect("first process is not in the process table")
+        };
+
+        // PID 0から子へ切り替える。
+        // return_ten()が10を返し、子はExited(10)になる。
+        // その後PID 0へ戻り、終了した子のスタックが解放される。
         yield_process();
 
-        assert_eq!(process_state(pid), Some(ProcessState::Exited(10)),);
+        {
+            let root = ROOT_PROCESS_MANAGER.lock();
+            let manager = root.as_ref().expect("process manager is not initialized");
 
-        assert_eq!(process_state(usize::MAX), None);
+            let process = manager.processes[first_index]
+                .as_ref()
+                .expect("exited process must remain until wait");
+
+            assert_eq!(process.pid, first_pid);
+            assert_eq!(process.state, ProcessState::Exited(10));
+
+            // 実行資源は解放するが、終了情報はwaitまで残す
+            assert!(process.stack.is_none());
+            assert!(process.entry.is_none());
+            assert_eq!(process.sp, 0);
+        }
+
+        // 親であるPID 0が終了コードを受け取る
+        match try_wait_process(first_pid) {
+            Ok(WaitResult::Exited(code)) => assert_eq!(code, 10),
+            other => panic!("expected Exited(10), got {:?}", other),
+        }
+
+        // wait後はプロセス情報も消える
+        assert_eq!(process_state(first_pid), None);
+
+        {
+            let root = ROOT_PROCESS_MANAGER.lock();
+            let manager = root.as_ref().expect("process manager is not initialized");
+
+            assert!(manager.processes[first_index].is_none());
+            assert_eq!(manager.process_count(), 1);
+        }
+
+        // 新しいプロセスを作る
+        let second_pid = create_process(return_zero).expect("failed to create second process");
+
+        // 空いたindexは再利用するが、PIDは再利用しない
+        assert!(second_pid > first_pid);
+
+        let second_index = {
+            let root = ROOT_PROCESS_MANAGER.lock();
+            let manager = root.as_ref().expect("process manager is not initialized");
+
+            manager
+                .processes
+                .iter()
+                .position(|slot| {
+                    slot.as_ref()
+                        .is_some_and(|process| process.pid == second_pid)
+                })
+                .expect("second process is not in the process table")
+        };
+
+        assert_eq!(second_index, first_index);
+
+        // テスト終了前に2個目のプロセスも実行・回収する
+        yield_process();
+
+        match try_wait_process(second_pid) {
+            Ok(WaitResult::Exited(code)) => assert_eq!(code, 0),
+            other => panic!("expected Exited(0), got {:?}", other),
+        }
+
+        assert_eq!(process_state(second_pid), None);
     }
 }

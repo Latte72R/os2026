@@ -19,12 +19,10 @@ fmt: ## Format Rust sources
 check: ## Check the kernel without building
 	RUSTFLAGS="$(RUSTFLAGS)" cargo check --target $(TARGET)
 
-build: $(KERNEL) ## Build the kernel
-
-$(KERNEL): Cargo.toml Cargo.lock rust-toolchain.toml $(LINKER_SCRIPT) $(wildcard src/*.rs) $(wildcard boot/*.S)
+build: ## Build the kernel
 	RUSTFLAGS="$(RUSTFLAGS)" cargo build --target $(TARGET) --$(PROFILE)
 
-run: $(KERNEL) ## Run the kernel with QEMU
+run: build ## Run the kernel with QEMU
 	./scripts/run.sh $(KERNEL)
 
 test: ## Run kernel tests with QEMU
