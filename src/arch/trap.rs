@@ -1,4 +1,4 @@
-use crate::arch::csr::{read_scause, read_sepc, read_stval, write_stvec};
+use crate::arch::csr::{read_scause, read_sepc, read_stval, write_sscratch, write_stvec};
 use crate::error;
 use core::arch::global_asm;
 
@@ -52,6 +52,10 @@ unsafe extern "C" {
 
 pub fn init() {
     let addr = kernel_entry_trap as *const () as usize;
+
+    // S-mode実行中はsscratchを0にする
+    // 将来U-modeへ移行する際に，そのプロセスのkernel_stack_topへ変更する
+    write_sscratch(0);
     write_stvec(addr);
 }
 
