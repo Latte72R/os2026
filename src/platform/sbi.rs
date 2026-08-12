@@ -22,6 +22,13 @@ pub fn putchar(ch: u8) {
     let _ = sbi_call(SBI_CONSOLE_PUTCHAR_EID, 0, ch as usize, 0, 0);
 }
 
+pub fn getchar() -> Option<u8> {
+    const SBI_CONSOLE_GETCHAR_EID: usize = 0x02;
+    let (value, _) = sbi_call(SBI_CONSOLE_GETCHAR_EID, 0, 0, 0, 0);
+
+    (value >= 0).then_some(value as u8)
+}
+
 #[allow(dead_code)]
 pub fn shutdown(success: bool) -> ! {
     const SBI_SYSTEM_RESET_EID: usize = 0x53525354;

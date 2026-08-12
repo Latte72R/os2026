@@ -3,9 +3,33 @@ use core::arch::global_asm;
 use core::mem::size_of;
 
 global_asm!(include_str!("../../boot/context.S"));
+global_asm!(include_str!("../../boot/user.S"));
 
 unsafe extern "C" {
     fn switch_context_asm(previous_sp: *mut usize, next_sp: *const usize);
+    fn enter_user_asm(
+        entry: usize,
+        user_stack_top: usize,
+        argument: usize,
+        kernel_stack_top: usize,
+    ) -> !;
+}
+
+/// Enters a user program for the first time through `sret`.
+///
+/// # Safety
+///
+/// All addresses must point to live memory in the shared Bare address space,
+/// and `kernel_stack_top` must remain valid for the lifetime of the process.
+pub unsafe fn enter_user(
+    entry: usize,
+    user_stack_top: usize,
+    argument: usize,
+    kernel_stack_top: usize,
+) -> ! {
+    unsafe {
+        enter_user_asm(entry, user_stack_top, argument, kernel_stack_top);
+    }
 }
 
 /// Switches from the current execution context to another context.

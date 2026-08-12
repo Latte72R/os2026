@@ -4,5 +4,7 @@
 _start:
     call main
 
-1:
-    j 1b
+    li a7, 3
+    ecall
+
+1:  j 1b

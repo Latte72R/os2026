@@ -2,7 +2,7 @@ OUTPUT_ARCH(riscv)
 ENTRY(_start)
 
 SECTIONS {
-    . = 0x01000000;
+    . = 0x80700000;
 
     .text : ALIGN(4096) {
         KEEP(*(.text.entry))
@@ -26,4 +26,6 @@ SECTIONS {
 
     . = ALIGN(4096);
     __user_end = .;
+
+    ASSERT(__user_end <= 0x80800000, "user image exceeds reserved RAM")
 }

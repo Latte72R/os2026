@@ -24,20 +24,21 @@
       # なので、もう一度交換して元へ戻す。
       csrrw sp, sscratch, sp
 
-      # 32 slots × 8 bytes = 256 bytes
+      # 34 slots × 8 bytes = 272 bytes (16-byte aligned)
       #
-      # slots 0..30: TrapFrame
-      # slot 31: U-mode由来かを表す内部フラグ
-      addi sp, sp, -32 * 8
+      # slots 0..31: TrapFrame (slot 31 is sepc)
+      # slot 32: U-mode由来かを表す内部フラグ
+      # slot 33: alignment padding
+      addi sp, sp, -34 * 8
 
       # 後で一時レジスタとしてt0を使うため、先に保存する。
       sd t0, 3 * 8(sp)
 
-      # slot 31 = 0ならS-mode由来
-      sd zero, 31 * 8(sp)
+      # slot 32 = 0ならS-mode由来
+      sd zero, 32 * 8(sp)
 
       # トラップ直前のkernel_spを保存する。
-      addi t0, sp, 32 * 8
+      addi t0, sp, 34 * 8
       sd t0, 30 * 8(sp)
 
       j .Lsave_registers
@@ -49,14 +50,14 @@
       #   sscratch = 元のuser_sp
       #
       # となっている。
-      addi sp, sp, -32 * 8
+      addi sp, sp, -34 * 8
 
       # 後で一時レジスタとしてt0を使うため、先に保存する。
       sd t0, 3 * 8(sp)
 
-      # slot 31 = 1ならU-mode由来
+      # slot 32 = 1ならU-mode由来
       li t0, 1
-      sd t0, 31 * 8(sp)
+      sd t0, 32 * 8(sp)
 
       # sscratchに退避されている元のuser_spをTrapFrameへ保存する。
       csrr t0, sscratch
@@ -67,6 +68,9 @@
       csrw sscratch, zero
 
   .Lsave_registers:
+      csrr t0, sepc
+      sd t0, 31 * 8(sp)
+
       sd ra,   0 * 8(sp)
       sd gp,   1 * 8(sp)
       sd tp,   2 * 8(sp)
@@ -140,8 +144,12 @@
       ld s10, 28 * 8(sp)
       ld s11, 29 * 8(sp)
 
-      # slot 31でU-mode由来かを判定する。
+      # 別プロセスのtrap処理をまたいでも元のPCへ戻れるようsepcを復元する。
       ld t0, 31 * 8(sp)
+      csrw sepc, t0
+
+      # slot 32でU-mode由来かを判定する。
+      ld t0, 32 * 8(sp)
       bnez t0, .Lreturn_to_user
 
   .Lreturn_to_supervisor:
@@ -164,7 +172,7 @@
 
       # TrapFrameを破棄する。
       # この時点のspはkernel_stack_topになる。
-      addi sp, sp, 32 * 8
+      addi sp, sp, 34 * 8
 
       # 入れ替えると、
       #

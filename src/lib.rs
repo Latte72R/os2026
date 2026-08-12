@@ -15,6 +15,8 @@ pub mod panic;
 pub mod platform;
 pub mod print;
 pub mod process;
+pub mod syscall;
+pub mod user_image;
 
 #[cfg(test)]
 mod test_runner;

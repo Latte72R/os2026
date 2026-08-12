@@ -1,3 +1,3 @@
 mod sbi;
 
-pub use sbi::{putchar, shutdown};
+pub use sbi::{getchar, putchar, shutdown};

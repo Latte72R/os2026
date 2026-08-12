@@ -1,11 +1,12 @@
 extern crate alloc;
 
-use crate::arch::context::{initialize_stack, switch_context};
+use crate::arch::context::{enter_user, initialize_stack, switch_context};
 use crate::error::{Error, Result};
 use crate::memory::Pages;
 use crate::mutex::Mutex;
 
 const KERNEL_STACK_PAGES: usize = 2;
+const USER_STACK_PAGES: usize = 2;
 const PROCESSES_MAX: usize = 8;
 
 pub type ProcessEntry = extern "C" fn() -> isize;
@@ -25,6 +26,8 @@ pub struct Process {
     sp: usize,
     stack: Option<Pages>,
     entry: Option<ProcessEntry>,
+    user_stack: Option<Pages>,
+    user_argument: usize,
 }
 
 impl Process {
@@ -39,6 +42,25 @@ impl Process {
             sp,
             stack: Some(stack),
             entry: Some(entry),
+            user_stack: None,
+            user_argument: 0,
+        })
+    }
+
+    fn new_user(pid: usize, parent_pid: Option<usize>, argument: usize) -> Option<Self> {
+        let mut stack = Pages::alloc(KERNEL_STACK_PAGES)?;
+        let sp = initialize_stack(&mut stack, user_entry_trampoline)?;
+        let user_stack = Pages::alloc(USER_STACK_PAGES)?;
+
+        Some(Self {
+            pid,
+            parent_pid,
+            state: ProcessState::Runnable,
+            sp,
+            stack: Some(stack),
+            entry: None,
+            user_stack: Some(user_stack),
+            user_argument: argument,
         })
     }
 
@@ -50,6 +72,8 @@ impl Process {
             sp: 0,
             stack: None,
             entry: None,
+            user_stack: None,
+            user_argument: 0,
         }
     }
 
@@ -73,6 +97,10 @@ impl Process {
         self.stack
             .as_ref()
             .map(|stack| stack.start_address() + stack.size())
+    }
+
+    pub fn parent_pid(&self) -> Option<usize> {
+        self.parent_pid
     }
 
     /// Switches execution from this process to `next`.
@@ -128,6 +156,17 @@ impl ProcessManager {
         let next_pid = self.next_pid.checked_add(1)?;
         let parent_pid = Some(self.current_pid());
         let process = Process::new(pid, parent_pid, entry)?;
+        self.processes[index] = Some(process);
+        self.next_pid = next_pid;
+        Some(pid)
+    }
+
+    fn create_user_process(&mut self, argument: usize) -> Option<usize> {
+        let index = self.processes.iter().position(Option::is_none)?;
+        let pid = self.next_pid;
+        let next_pid = self.next_pid.checked_add(1)?;
+        let parent_pid = Some(self.current_pid());
+        let process = Process::new_user(pid, parent_pid, argument)?;
         self.processes[index] = Some(process);
         self.next_pid = next_pid;
         Some(pid)
@@ -216,6 +255,7 @@ impl ProcessManager {
             if matches!(process.state, ProcessState::Exited(_)) {
                 process.stack = None;
                 process.entry = None;
+                process.user_stack = None;
                 process.sp = 0;
             }
         }
@@ -275,6 +315,13 @@ pub fn create_process(entry: extern "C" fn() -> isize) -> Option<usize> {
     manager.create_process(entry)
 }
 
+pub fn create_user_process(argument: usize) -> Option<usize> {
+    let mut root = ROOT_PROCESS_MANAGER.lock();
+    let manager = root.as_mut()?;
+
+    manager.create_user_process(argument)
+}
+
 fn release_exited_resources() {
     let mut root = ROOT_PROCESS_MANAGER.lock();
     let manager = root.as_mut().expect("process manager is not initialized");
@@ -324,6 +371,42 @@ extern "C" fn process_entry_trampoline() -> ! {
     exit_process(exit_code);
 }
 
+fn current_user_context() -> (usize, usize, usize, usize) {
+    let root = ROOT_PROCESS_MANAGER.lock();
+    let manager = root.as_ref().expect("process manager is not initialized");
+    let process = manager.processes[manager.current_index]
+        .as_ref()
+        .expect("current process is not initialized");
+
+    let user_stack = process
+        .user_stack
+        .as_ref()
+        .expect("current process has no user stack");
+    let user_stack_top = user_stack.start_address() + user_stack.size();
+    let kernel_stack_top = process
+        .stack_end()
+        .expect("current process has no kernel stack");
+
+    (
+        crate::user_image::entry(),
+        user_stack_top,
+        process.user_argument,
+        kernel_stack_top,
+    )
+}
+
+extern "C" fn user_entry_trampoline() -> ! {
+    release_exited_resources();
+
+    let (entry, user_stack_top, argument, kernel_stack_top) = current_user_context();
+
+    // SAFETY: Both stacks are owned by the current process and remain allocated
+    // until that process exits. The user image was copied before scheduling.
+    unsafe {
+        enter_user(entry, user_stack_top, argument, kernel_stack_top);
+    }
+}
+
 pub fn exit_process(exit_code: isize) -> ! {
     let switch_info = {
         let mut root = ROOT_PROCESS_MANAGER.lock();
@@ -365,6 +448,25 @@ pub fn try_wait_process(child_pid: usize) -> Result<WaitResult> {
     manager.try_wait(parent_pid, child_pid)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessInfo {
+    pub pid: usize,
+    pub parent_pid: Option<usize>,
+    pub state: ProcessState,
+}
+
+pub fn process_info(slot: usize) -> Option<ProcessInfo> {
+    let root = ROOT_PROCESS_MANAGER.lock();
+    let manager = root.as_ref()?;
+    let process = manager.processes.get(slot)?.as_ref()?;
+
+    Some(ProcessInfo {
+        pid: process.pid(),
+        parent_pid: process.parent_pid(),
+        state: process.state(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,6 +493,7 @@ mod tests {
         assert_eq!(idle.pid(), 0);
         assert_eq!(idle.state(), ProcessState::Idle);
         assert_eq!(idle.stack_start(), None);
+        assert!(idle.user_stack.is_none());
         assert_eq!(manager.current_pid(), 0);
 
         let process = Process::new(1, Some(0), return_zero).expect("failed to create process");
@@ -408,6 +511,21 @@ mod tests {
         assert_eq!(sp % 16, 0);
         assert!(stack_start <= sp);
         assert!(sp + CONTEXT_SIZE <= stack_end);
+        assert!(process.user_stack.is_none());
+    }
+
+    #[test_case]
+    fn user_process_has_separate_kernel_and_user_stacks() {
+        let process = Process::new_user(1, Some(0), 42).expect("failed to create user process");
+        let kernel_start = process.stack_start().unwrap();
+        let kernel_end = process.stack_end().unwrap();
+        let user_stack = process.user_stack.as_ref().unwrap();
+        let user_start = user_stack.start_address();
+        let user_end = user_start + user_stack.size();
+
+        assert!(kernel_end <= user_start || user_end <= kernel_start);
+        assert_eq!(process.user_argument, 42);
+        assert!(process.entry.is_none());
     }
 
     #[test_case]

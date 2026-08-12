@@ -1,4 +1,4 @@
-use crate::arch::csr::{read_scause, read_sepc, read_stval, write_sscratch, write_stvec};
+use crate::arch::csr::{read_scause, read_stval, write_sscratch, write_stvec};
 use crate::error;
 use core::arch::global_asm;
 
@@ -41,10 +41,11 @@ pub struct TrapFrame {
     pub s11: usize,
 
     pub sp: usize,
+    pub sepc: usize,
 }
 
 // TrapFrame のサイズが想定どおりかをコンパイル時に検査する
-const _: () = assert!(core::mem::size_of::<TrapFrame>() == 31 * core::mem::size_of::<usize>());
+const _: () = assert!(core::mem::size_of::<TrapFrame>() == 32 * core::mem::size_of::<usize>());
 
 unsafe extern "C" {
     fn kernel_entry_trap();
@@ -60,19 +61,25 @@ pub fn init() {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn handle_trap(_frame: &mut TrapFrame) {
+extern "C" fn handle_trap(frame: &mut TrapFrame) {
     let scause = read_scause();
-    let sepc = read_sepc();
     let stval = read_stval();
+
+    const ENVIRONMENT_CALL_FROM_U_MODE: usize = 8;
+    if scause == ENVIRONMENT_CALL_FROM_U_MODE {
+        frame.sepc = frame.sepc.checked_add(4).expect("user sepc overflow");
+        crate::syscall::handle(frame);
+        return;
+    }
 
     error!("trap occurred!");
     error!("scause = {:#x}", scause);
-    error!("sepc   = {:#x}", sepc);
+    error!("sepc   = {:#x}", frame.sepc);
     error!("stval  = {:#x}", stval);
 
     // just panic on any trap
     panic!(
         "unexpected trap: scause={:#x}, sepc={:#x}, stval={:#x}",
-        scause, sepc, stval
+        scause, frame.sepc, stval
     );
 }

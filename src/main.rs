@@ -4,51 +4,19 @@
 use vertos;
 use vertos::init;
 
-extern "C" fn process_a_entry() -> isize {
-    for i in 0..3 {
-        vertos::info!("A: {i}");
-        vertos::process::yield_process();
-    }
-    0
-}
-
-extern "C" fn process_b_entry() -> isize {
-    for i in 0..3 {
-        vertos::info!("B: {i}");
-        vertos::process::yield_process();
-    }
-    0
-}
-
 #[unsafe(no_mangle)]
 extern "C" fn rust_main() -> ! {
     init::init_basic_runtime();
-    vertos::info!("minimal kernel started.");
+    vertos::info!("vertos kernel started in S-mode (satp.MODE=Bare)");
 
-    let pid_a =
-        vertos::process::create_process(process_a_entry).expect("failed to create process A");
-
-    let pid_b =
-        vertos::process::create_process(process_b_entry).expect("failed to create process B");
-    vertos::info!("created PID {pid_a}");
-    vertos::info!("created PID {pid_b}");
+    vertos::user_image::load();
+    let shell_pid =
+        vertos::process::create_user_process(0).expect("failed to create user shell process");
+    vertos::info!("starting U-mode shell as PID {shell_pid}");
 
     vertos::process::yield_process();
 
-    vertos::info!(
-        "PID {pid_a} state: {:?}",
-        vertos::process::try_wait_process(pid_a)
-    );
-    vertos::info!(
-        "PID {pid_b} state: {:?}",
-        vertos::process::try_wait_process(pid_b)
-    );
-
-    vertos::info!("processes finished, halting CPU.");
-
     loop {
-        unsafe {
-            core::arch::asm!("wfi");
-        }
+        vertos::process::yield_process();
     }
 }

@@ -4,7 +4,9 @@
 
 Rustで実装された，RV64IMAC 向けのシンプルなOSです．
 
-現在は，OpenSBIを介したコンソール出力，例外処理，First Fit Allocator による動的メモリ確保を実装しています．
+OpenSBI上のS-modeカーネルと，U-modeで動く対話シェルを実装しています．
+ページングを使わないBareアドレス空間で，ECALL，独立したkernel/user stack，
+協調式round-robin，spawn，yield，exit，waitを実際に操作できます．
 
 ## 必要なツール
 
@@ -26,8 +28,23 @@ make run    # ビルドしたカーネルをQEMUで実行
 make fmt    # Rustソースを整形
 make check  # カーネルをビルドせずに検査
 make test   # QEMUでカーネルのテストを実行
+make test-shell # シェルとプロセス機構のE2Eテスト
 make clean  # ビルド生成物を削除
 ```
+
+シェルでは次のコマンドを利用できます．
+
+```text
+help
+echo hello
+ps
+run demo
+wait 2
+clear
+shutdown
+```
+
+`run demo`は2つのU-mode workerを生成し，明示的な`yield`による切替を表示します．
 
 QEMUを終了するには，`Ctrl-a`を押してから`x`を押します．
 
