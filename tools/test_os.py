@@ -7,35 +7,34 @@ import sys
 import time
 
 
-class ShellTest:
-    def __init__(self, kernel: str) -> None:
+class BeigecoreTest:
+    def __init__(self, simulator: str, rom: str, ram: str) -> None:
         self.output = bytearray()
         self.process = subprocess.Popen(
-            ["./scripts/run.sh", kernel],
+            [simulator, rom, ram],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )
 
-    def read_until(self, expected: bytes, timeout: float = 10.0) -> None:
+    def read_more(self, timeout: float) -> None:
         assert self.process.stdout is not None
-        deadline = time.monotonic() + timeout
+        ready, _, _ = select.select([self.process.stdout], [], [], timeout)
+        if not ready:
+            return
 
-        while expected not in self.output:
+        chunk = os.read(self.process.stdout.fileno(), 4096)
+        if not chunk:
+            raise RuntimeError(f"simulator exited unexpectedly with {self.process.poll()}")
+        self.output.extend(chunk)
+
+    def read_until(self, expected: bytes, start: int = 0, timeout: float = 90.0) -> None:
+        deadline = time.monotonic() + timeout
+        while expected not in self.output[start:]:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(f"did not receive {expected!r}")
-
-            ready, _, _ = select.select([self.process.stdout], [], [], remaining)
-            if not ready:
-                continue
-
-            chunk = os.read(self.process.stdout.fileno(), 4096)
-            if not chunk:
-                raise RuntimeError(
-                    f"QEMU exited with {self.process.poll()} before {expected!r}"
-                )
-            self.output.extend(chunk)
+            self.read_more(remaining)
 
     def command(self, command: str, expected: bytes) -> None:
         self.send(command.encode("ascii") + b"\r", expected)
@@ -45,31 +44,17 @@ class ShellTest:
         start = len(self.output)
         self.process.stdin.write(data)
         self.process.stdin.flush()
+        self.read_until(expected, start=start)
 
-        deadline = time.monotonic() + 10.0
-        while expected not in self.output[start:]:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(f"input {data!r} did not produce {expected!r}")
-            self.read_more(remaining)
-
-    def read_more(self, timeout: float) -> None:
-        assert self.process.stdout is not None
-        ready, _, _ = select.select([self.process.stdout], [], [], timeout)
-        if not ready:
-            return
-        chunk = os.read(self.process.stdout.fileno(), 4096)
-        if not chunk:
-            raise RuntimeError(f"QEMU exited unexpectedly with {self.process.poll()}")
-        self.output.extend(chunk)
-
-    def finish(self) -> None:
+    def shutdown(self) -> None:
         assert self.process.stdin is not None
         self.process.stdin.write(b"poweroff\r")
         self.process.stdin.flush()
-        return_code = self.process.wait(timeout=10.0)
+        return_code = self.process.wait(timeout=30.0)
+        assert self.process.stdout is not None
+        self.output.extend(self.process.stdout.read())
         if return_code != 0:
-            raise RuntimeError(f"QEMU exited with {return_code}")
+            raise RuntimeError(f"simulator exited with {return_code}")
 
     def close(self) -> None:
         if self.process.poll() is None:
@@ -81,11 +66,13 @@ class ShellTest:
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print(f"usage: {sys.argv[0]} KERNEL", file=sys.stderr)
+    if len(sys.argv) != 5:
+        print(f"usage: {sys.argv[0]} SIMULATOR ROM RAM LOG", file=sys.stderr)
         return 2
 
-    test = ShellTest(sys.argv[1])
+    simulator, rom, ram, log = sys.argv[1:]
+    test = BeigecoreTest(simulator, rom, ram)
+
     try:
         test.read_until(b"vertos> ")
         test.send(b"echo cancelled\x03", b"^C\r\r\nvertos> ")
@@ -126,16 +113,20 @@ def main() -> int:
         test.command("kill -KILL 7", b"[7] killed")
         test.command("workers &", b"[8,9] running workers")
         test.command("wait", b"[9] exited 2\r\r\nvertos> ")
-        test.command("echo hello", b"echo hello\r\r\nhello\r\r\nvertos> ")
-        test.finish()
+        test.command("echo beigecore", b"beigecore\r\r\nvertos> ")
+        test.shutdown()
+        if b"system poweroff" not in test.output:
+            raise RuntimeError("system controller did not report poweroff")
     except Exception as error:
         print(test.output.decode("utf-8", errors="replace"), file=sys.stderr)
         print(f"FAIL: {error}", file=sys.stderr)
         return 1
     finally:
         test.close()
+        with open(log, "wb") as log_file:
+            log_file.write(test.output)
 
-    print("PASS: U-mode shell, job control, and cooperative processes")
+    print("PASS: vertos U-mode shell and job control on beigecore")
     return 0
 
 

@@ -16,15 +16,17 @@ const SYS_PROC_INFO: usize = 6;
 const SYS_SHUTDOWN: usize = 7;
 const SYS_PROCESS_CONTROL: usize = 8;
 
-const PROGRAM_DEMO: usize = 1;
+const PROGRAM_WORKERS: usize = 1;
 const PROGRAM_YES: usize = 2;
 const PROCESS_TERMINATE: usize = 0;
 const PROCESS_STOP: usize = 1;
 const PROCESS_CONTINUE: usize = 2;
 const PROCESS_INTERRUPT: usize = 3;
+const PROCESS_KILL: usize = 4;
 const CTRL_C: u8 = 0x03;
 const CTRL_Z: u8 = 0x1a;
 const LINE_MAX: usize = 128;
+const HISTORY_MAX: usize = 8;
 const PROCESS_SLOTS: usize = 8;
 
 fn syscall(number: usize, arg0: usize, arg1: usize) -> isize {
@@ -120,6 +122,49 @@ struct ProcessInfo {
     state: usize,
 }
 
+#[derive(Clone, Copy)]
+struct Job {
+    pids: [usize; 2],
+    count: usize,
+}
+
+impl Job {
+    fn single(pid: usize) -> Self {
+        Self {
+            pids: [pid, 0],
+            count: 1,
+        }
+    }
+
+    fn pair(first: usize, second: usize) -> Self {
+        Self {
+            pids: [first, second],
+            count: 2,
+        }
+    }
+
+    fn contains(self, pid: usize) -> bool {
+        self.pids[..self.count].contains(&pid)
+    }
+
+    fn without(self, pid: usize) -> Option<Self> {
+        if !self.contains(pid) {
+            return Some(self);
+        }
+
+        if self.count == 1 {
+            None
+        } else {
+            let remaining = if self.pids[0] == pid {
+                self.pids[1]
+            } else {
+                self.pids[0]
+            };
+            Some(Self::single(remaining))
+        }
+    }
+}
+
 fn process_info(slot: usize) -> Option<ProcessInfo> {
     let status: isize;
     let pid: usize;
@@ -155,29 +200,180 @@ fn parse_number(bytes: &[u8]) -> Option<usize> {
     Some(value)
 }
 
-fn read_line(buffer: &mut [u8; LINE_MAX]) -> usize {
+struct CommandHistory {
+    entries: [[u8; LINE_MAX]; HISTORY_MAX],
+    lengths: [usize; HISTORY_MAX],
+    count: usize,
+}
+
+impl CommandHistory {
+    fn new() -> Self {
+        Self {
+            entries: [[0; LINE_MAX]; HISTORY_MAX],
+            lengths: [0; HISTORY_MAX],
+            count: 0,
+        }
+    }
+
+    fn push(&mut self, command: &[u8]) {
+        if command.is_empty()
+            || (self.count != 0
+                && self.entries[self.count - 1][..self.lengths[self.count - 1]] == *command)
+        {
+            return;
+        }
+
+        let index = if self.count < HISTORY_MAX {
+            let index = self.count;
+            self.count += 1;
+            index
+        } else {
+            for index in 1..HISTORY_MAX {
+                self.entries[index - 1] = self.entries[index];
+                self.lengths[index - 1] = self.lengths[index];
+            }
+            HISTORY_MAX - 1
+        };
+
+        self.entries[index] = [0; LINE_MAX];
+        self.entries[index][..command.len()].copy_from_slice(command);
+        self.lengths[index] = command.len();
+    }
+
+    fn get(&self, index: usize) -> &[u8] {
+        &self.entries[index][..self.lengths[index]]
+    }
+}
+
+enum ReadLineResult {
+    Line(usize),
+    Cancelled,
+}
+
+fn wait_for_input() -> u8 {
+    loop {
+        if let Some(ch) = getchar() {
+            return ch;
+        }
+        yield_process();
+    }
+}
+
+fn move_cursor_left(count: usize) {
+    for _ in 0..count {
+        print("\x1b[D");
+    }
+}
+
+fn move_cursor_right(count: usize) {
+    for _ in 0..count {
+        print("\x1b[C");
+    }
+}
+
+fn replace_line(
+    buffer: &mut [u8; LINE_MAX],
+    length: &mut usize,
+    cursor: &mut usize,
+    replacement: &[u8],
+) {
+    let old_length = *length;
+    move_cursor_left(*cursor);
+
+    buffer[..replacement.len()].copy_from_slice(replacement);
+    *length = replacement.len();
+    *cursor = *length;
+
+    for byte in replacement {
+        putchar(*byte);
+    }
+    for _ in replacement.len()..old_length {
+        putchar(b' ');
+    }
+    move_cursor_left(old_length.saturating_sub(replacement.len()));
+}
+
+fn read_line(buffer: &mut [u8; LINE_MAX], history: &CommandHistory) -> ReadLineResult {
     let mut length = 0;
+    let mut cursor = 0;
+    let mut history_index = history.count;
+    let mut browsing_history = false;
+    let mut draft = [0; LINE_MAX];
+    let mut draft_length = 0;
 
     loop {
-        let Some(ch) = getchar() else {
-            yield_process();
-            continue;
-        };
+        let ch = wait_for_input();
 
         match ch {
             b'\r' | b'\n' => {
                 print("\r\n");
-                return length;
+                return ReadLineResult::Line(length);
             }
-            0x08 | 0x7f if length != 0 => {
+            CTRL_C => {
+                move_cursor_right(length - cursor);
+                print("^C\r\n");
+                return ReadLineResult::Cancelled;
+            }
+            0x08 | 0x7f if cursor != 0 => {
+                browsing_history = false;
+                move_cursor_left(1);
+                for index in cursor..length {
+                    buffer[index - 1] = buffer[index];
+                }
                 length -= 1;
-                print("\x08 \x08");
+                cursor -= 1;
+                for byte in &buffer[cursor..length] {
+                    putchar(*byte);
+                }
+                putchar(b' ');
+                move_cursor_left(length - cursor + 1);
             }
             0x20..=0x7e if length < buffer.len() => {
-                buffer[length] = ch;
+                browsing_history = false;
+                for index in (cursor..length).rev() {
+                    buffer[index + 1] = buffer[index];
+                }
+                buffer[cursor] = ch;
                 length += 1;
-                putchar(ch);
+                for byte in &buffer[cursor..length] {
+                    putchar(*byte);
+                }
+                move_cursor_left(length - cursor - 1);
+                cursor += 1;
             }
+            0x1b if wait_for_input() == b'[' => match wait_for_input() {
+                b'A' if history.count != 0 => {
+                    if !browsing_history {
+                        draft[..length].copy_from_slice(&buffer[..length]);
+                        draft_length = length;
+                        history_index = history.count;
+                        browsing_history = true;
+                    }
+                    if history_index != 0 {
+                        history_index -= 1;
+                        replace_line(buffer, &mut length, &mut cursor, history.get(history_index));
+                    }
+                }
+                b'B' if browsing_history => {
+                    if history_index + 1 < history.count {
+                        history_index += 1;
+                        replace_line(buffer, &mut length, &mut cursor, history.get(history_index));
+                    } else {
+                        history_index = history.count;
+                        browsing_history = false;
+                        replace_line(buffer, &mut length, &mut cursor, &draft[..draft_length]);
+                    }
+                }
+                b'C' if cursor < length => {
+                    move_cursor_right(1);
+                    cursor += 1;
+                }
+                b'D' if cursor != 0 => {
+                    move_cursor_left(1);
+                    cursor -= 1;
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -214,6 +410,7 @@ fn report_exit(pid: usize, code: isize) {
     print_number(pid);
     match code {
         130 => print("] interrupted\r\n"),
+        137 => print("] killed\r\n"),
         143 => print("] terminated\r\n"),
         _ => {
             print("] exited ");
@@ -228,53 +425,98 @@ fn report_exit(pid: usize, code: isize) {
     }
 }
 
-fn foreground(pid: usize, last_job: &mut Option<usize>) {
+fn control_job(job: Job, active: &[bool; 2], control: usize) -> bool {
+    let mut success = true;
+    for (index, pid) in job.pids[..job.count].iter().enumerate() {
+        if active[index] && !control_process(*pid, control) {
+            success = false;
+        }
+    }
+    success
+}
+
+fn remaining_job(job: Job, active: &[bool; 2]) -> Option<Job> {
+    let mut pids = [0; 2];
+    let mut count = 0;
+    for (index, pid) in job.pids[..job.count].iter().enumerate() {
+        if active[index] {
+            pids[count] = *pid;
+            count += 1;
+        }
+    }
+    (count != 0).then_some(Job { pids, count })
+}
+
+fn print_job(job: Job) {
+    print("[");
+    for (index, pid) in job.pids[..job.count].iter().enumerate() {
+        if index != 0 {
+            print(",");
+        }
+        print_number(*pid);
+    }
+    print("]");
+}
+
+fn foreground(job: Job, last_job: &mut Option<Job>) {
+    let mut active = [false; 2];
+    active[..job.count].fill(true);
+
     loop {
-        match wait_process(pid) {
-            WaitResult::Running => {
-                match getchar() {
-                    Some(CTRL_C) => {
-                        print("^C\r\n");
-                        if !control_process(pid, PROCESS_INTERRUPT) {
-                            print("failed to interrupt process\r\n");
-                            return;
-                        }
-                    }
-                    Some(CTRL_Z) => {
-                        print("^Z\r\n");
-                        if control_process(pid, PROCESS_STOP) {
-                            *last_job = Some(pid);
-                            print("[");
-                            print_number(pid);
-                            print("] stopped\r\n");
-                        } else {
-                            print("failed to stop process\r\n");
-                        }
-                        return;
-                    }
-                    _ => {}
+        let mut all_stopped = true;
+        for (index, pid) in job.pids[..job.count].iter().enumerate() {
+            if !active[index] {
+                continue;
+            }
+
+            match wait_process(*pid) {
+                WaitResult::Running => all_stopped = false,
+                WaitResult::Stopped => {}
+                WaitResult::Exited(code) => {
+                    active[index] = false;
+                    report_exit(*pid, code);
                 }
-                yield_process();
-            }
-            WaitResult::Stopped => {
-                *last_job = Some(pid);
-                print("[");
-                print_number(pid);
-                print("] stopped\r\n");
-                return;
-            }
-            WaitResult::Exited(code) => {
-                if *last_job == Some(pid) {
-                    *last_job = None;
+                WaitResult::Error => {
+                    active[index] = false;
+                    print("not a child process\r\n");
                 }
-                report_exit(pid, code);
-                return;
-            }
-            WaitResult::Error => {
-                print("not a child process\r\n");
-                return;
             }
         }
+
+        let Some(remaining) = remaining_job(job, &active) else {
+            *last_job = None;
+            return;
+        };
+
+        if all_stopped {
+            *last_job = Some(remaining);
+            print_job(remaining);
+            print(" stopped\r\n");
+            return;
+        }
+
+        match getchar() {
+            Some(CTRL_C) => {
+                print("^C\r\n");
+                if !control_job(job, &active, PROCESS_INTERRUPT) {
+                    print("failed to interrupt process\r\n");
+                    return;
+                }
+            }
+            Some(CTRL_Z) => {
+                print("^Z\r\n");
+                if control_job(job, &active, PROCESS_STOP) {
+                    *last_job = Some(remaining);
+                    print_job(remaining);
+                    print(" stopped\r\n");
+                } else {
+                    print("failed to stop process\r\n");
+                }
+                return;
+            }
+            _ => {}
+        }
+        yield_process();
     }
 }
 
@@ -283,7 +525,7 @@ fn start_job(
     argument: usize,
     name: &str,
     background: bool,
-    last_job: &mut Option<usize>,
+    last_job: &mut Option<Job>,
 ) {
     let pid = spawn_process(program, argument);
     if pid < 0 {
@@ -297,19 +539,40 @@ fn start_job(
     print("] running ");
     print(name);
     print("\r\n");
-    *last_job = Some(pid);
+    let job = Job::single(pid);
+    *last_job = Some(job);
 
     if !background {
-        foreground(pid, last_job);
+        foreground(job, last_job);
     }
 }
 
-fn command_wait(argument: &[u8]) {
-    let Some(pid) = parse_number(argument) else {
-        print("usage: wait <pid>\r\n");
+fn start_workers(background: bool, last_job: &mut Option<Job>) {
+    let first = spawn_process(PROGRAM_WORKERS, 1);
+    let second = spawn_process(PROGRAM_WORKERS, 2);
+    if first < 0 || second < 0 {
+        for pid in [first, second] {
+            if pid >= 0 {
+                let pid = pid as usize;
+                let _ = control_process(pid, PROCESS_TERMINATE);
+                let _ = wait_process(pid);
+            }
+        }
+        print("failed to spawn workers\r\n");
         return;
-    };
+    }
 
+    let job = Job::pair(first as usize, second as usize);
+    print_job(job);
+    print(" running workers\r\n");
+    *last_job = Some(job);
+
+    if !background {
+        foreground(job, last_job);
+    }
+}
+
+fn wait_for_pid(pid: usize, last_job: &mut Option<Job>) {
     loop {
         match wait_process(pid) {
             WaitResult::Running => yield_process(),
@@ -320,14 +583,47 @@ fn command_wait(argument: &[u8]) {
                 return;
             }
             WaitResult::Exited(code) => {
+                if let Some(job) = *last_job {
+                    *last_job = job.without(pid);
+                }
                 report_exit(pid, code);
                 return;
             }
             WaitResult::Error => {
+                if let Some(job) = *last_job {
+                    *last_job = job.without(pid);
+                }
                 print("not a child process\r\n");
                 return;
             }
         }
+    }
+}
+
+fn command_wait(argument: &[u8], last_job: &mut Option<Job>) {
+    if !argument.is_empty() {
+        let Some(pid) = parse_number(argument) else {
+            print("usage: wait [pid]\r\n");
+            return;
+        };
+        wait_for_pid(pid, last_job);
+        return;
+    }
+
+    let mut children = [0; PROCESS_SLOTS];
+    let mut count = 0;
+    for slot in 0..PROCESS_SLOTS {
+        let Some(info) = process_info(slot) else {
+            continue;
+        };
+        if info.parent == 1 {
+            children[count] = info.pid;
+            count += 1;
+        }
+    }
+
+    for pid in &children[..count] {
+        wait_for_pid(*pid, last_job);
     }
 }
 
@@ -358,55 +654,63 @@ fn command_jobs() {
     }
 }
 
-fn job_pid(argument: &[u8], last_job: Option<usize>, usage: &str) -> Option<usize> {
-    let pid = if argument.is_empty() {
+fn selected_job(argument: &[u8], last_job: Option<Job>, usage: &str) -> Option<Job> {
+    let job = if argument.is_empty() {
         last_job
     } else {
-        parse_number(argument)
+        parse_number(argument).map(Job::single)
     };
 
-    if pid.is_none() {
+    if job.is_none() {
         print(usage);
         print("\r\n");
     }
-    pid
+    job
 }
 
-fn command_fg(argument: &[u8], last_job: &mut Option<usize>) {
-    let Some(pid) = job_pid(argument, *last_job, "usage: fg [pid]") else {
+fn command_fg(argument: &[u8], last_job: &mut Option<Job>) {
+    let Some(job) = selected_job(argument, *last_job, "usage: fg [pid]") else {
         return;
     };
-    if !control_process(pid, PROCESS_CONTINUE) {
+    let active = [true; 2];
+    if !control_job(job, &active, PROCESS_CONTINUE) {
         print("failed to continue process\r\n");
         return;
     }
-    foreground(pid, last_job);
+    print_job(job);
+    print(" foreground\r\n");
+    foreground(job, last_job);
 }
 
-fn command_bg(argument: &[u8], last_job: &mut Option<usize>) {
-    let Some(pid) = job_pid(argument, *last_job, "usage: bg [pid]") else {
+fn command_bg(argument: &[u8], last_job: &mut Option<Job>) {
+    let Some(job) = selected_job(argument, *last_job, "usage: bg [pid]") else {
         return;
     };
-    if control_process(pid, PROCESS_CONTINUE) {
-        *last_job = Some(pid);
-        print("[");
-        print_number(pid);
-        print("] running\r\n");
+    let active = [true; 2];
+    if control_job(job, &active, PROCESS_CONTINUE) {
+        *last_job = Some(job);
+        print_job(job);
+        print(" running\r\n");
     } else {
         print("failed to continue process\r\n");
     }
 }
 
-fn command_kill(argument: &[u8], last_job: &mut Option<usize>) {
+fn command_kill(argument: &[u8], last_job: &mut Option<Job>) {
     let (control, pid_bytes) = if let Some(pid) = argument.strip_prefix(b"-STOP ") {
         (PROCESS_STOP, pid)
     } else if let Some(pid) = argument.strip_prefix(b"-CONT ") {
         (PROCESS_CONTINUE, pid)
+    } else if let Some(pid) = argument
+        .strip_prefix(b"-9 ")
+        .or_else(|| argument.strip_prefix(b"-KILL "))
+    {
+        (PROCESS_KILL, pid)
     } else {
         (PROCESS_TERMINATE, argument)
     };
     let Some(pid) = parse_number(pid_bytes) else {
-        print("usage: kill [-STOP|-CONT] <pid>\r\n");
+        print("usage: kill [-9|-KILL|-STOP|-CONT] <pid>\r\n");
         return;
     };
 
@@ -416,39 +720,66 @@ fn command_kill(argument: &[u8], last_job: &mut Option<usize>) {
     }
 
     if control == PROCESS_STOP {
-        *last_job = Some(pid);
+        *last_job = Some(Job::single(pid));
         print("[");
         print_number(pid);
         print("] stopped\r\n");
     } else if control == PROCESS_CONTINUE {
-        *last_job = Some(pid);
+        *last_job = Some(Job::single(pid));
         print("[");
         print_number(pid);
         print("] running\r\n");
     } else {
-        if *last_job == Some(pid) {
-            *last_job = None;
+        if let Some(job) = *last_job {
+            *last_job = job.without(pid);
         }
         let _ = wait_process(pid);
         print("[");
         print_number(pid);
-        print("] terminated\r\n");
+        if control == PROCESS_KILL {
+            print("] killed\r\n");
+        } else {
+            print("] terminated\r\n");
+        }
     }
 }
 
-fn execute_command(line: &[u8], last_job: &mut Option<usize>) {
+fn execute_command(line: &[u8], last_job: &mut Option<Job>) {
+    let (line, background) = if let Some(command) = line.strip_suffix(b" &") {
+        (command, true)
+    } else {
+        (line, false)
+    };
+
+    match line {
+        b"workers" => {
+            start_workers(background, last_job);
+            return;
+        }
+        b"yes" => {
+            start_job(PROGRAM_YES, 0, "yes", background, last_job);
+            return;
+        }
+        _ => {}
+    }
+
+    if background {
+        print("cannot run shell built-in in background\r\n");
+        return;
+    }
+
     match line {
         b"" => {}
         b"help" => {
-            print("echo <text>  ps  jobs  demo [&]  yes  wait <pid>\r\n");
-            print("fg [pid]  bg [pid]  kill [-STOP|-CONT] <pid>  clear  poweroff\r\n");
-            print("Ctrl-C interrupts and Ctrl-Z stops the foreground job\r\n");
+            print("echo <text>  ps  jobs  workers  yes  wait [pid]\r\n");
+            print("fg [pid]  bg [pid]  kill [-9|-KILL|-STOP|-CONT] <pid>\r\n");
+            print("append '&' to run an executable command in background\r\n");
+            print("clear  poweroff\r\n");
+            print("Ctrl-C cancels input or interrupts the foreground job\r\n");
+            print("Ctrl-Z stops a job; arrow keys edit input and history\r\n");
         }
         b"ps" => command_ps(),
         b"jobs" => command_jobs(),
-        b"demo" => start_job(PROGRAM_DEMO, 1, "demo", false, last_job),
-        b"demo &" => start_job(PROGRAM_DEMO, 1, "demo", true, last_job),
-        b"yes" => start_job(PROGRAM_YES, 0, "yes", false, last_job),
         b"clear" => print("\x1b[2J\x1b[H"),
         b"poweroff" | b"shutdown" => {
             let _ = syscall(SYS_SHUTDOWN, 0, 0);
@@ -459,11 +790,13 @@ fn execute_command(line: &[u8], last_job: &mut Option<usize>) {
             }
             print("\r\n");
         }
-        _ if line.starts_with(b"wait ") => command_wait(&line[5..]),
+        b"wait" => command_wait(b"", last_job),
+        _ if line.starts_with(b"wait ") => command_wait(&line[5..], last_job),
         b"fg" => command_fg(b"", last_job),
         _ if line.starts_with(b"fg ") => command_fg(&line[3..], last_job),
         b"bg" => command_bg(b"", last_job),
         _ if line.starts_with(b"bg ") => command_bg(&line[3..], last_job),
+        b"kill" => print("usage: kill [-9|-KILL|-STOP|-CONT] <pid>\r\n"),
         _ if line.starts_with(b"kill ") => command_kill(&line[5..], last_job),
         _ => print("unknown command\r\n"),
     }
@@ -474,16 +807,22 @@ fn shell() -> ! {
     print("type 'help' for commands\r\n");
 
     let mut line = [0u8; LINE_MAX];
+    let mut history = CommandHistory::new();
     let mut last_job = None;
     loop {
         print("vertos> ");
-        let length = read_line(&mut line);
-        execute_command(&line[..length], &mut last_job);
+        match read_line(&mut line, &history) {
+            ReadLineResult::Line(length) => {
+                history.push(&line[..length]);
+                execute_command(&line[..length], &mut last_job);
+            }
+            ReadLineResult::Cancelled => {}
+        }
     }
 }
 
-fn demo_worker(worker: usize) -> ! {
-    for step in 0..4 {
+fn worker_process(worker: usize) -> ! {
+    for step in 0..10 {
         print("[worker ");
         print_number(worker);
         print("] step ");
@@ -512,7 +851,7 @@ extern "C" fn main(argument: usize) -> ! {
     } else if argument == usize::MAX {
         yes_worker()
     } else {
-        demo_worker(argument)
+        worker_process(argument)
     }
 }
 

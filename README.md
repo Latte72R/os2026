@@ -40,24 +40,44 @@ help
 echo hello
 ps
 jobs
-demo
-demo &
+workers
+workers &
 yes
+yes &
+fg
 fg 3
+bg
 bg 3
 kill 3
+kill -9 3
+kill -KILL 3
 kill -STOP 3
 kill -CONT 3
+wait
 wait 3
 clear
 poweroff
 ```
 
-`demo`はU-mode workerをforegroundで実行し，`demo &`はbackgroundで実行します．
-`yes`は停止操作を試すために終了せず動き続けます．実行中に`Ctrl+Z`を入力すると
+`workers`は2つのU-mode workerをforegroundで各10ステップ実行し，round-robinに
+よる交互の出力を表示します．`workers &`は同じ2 workerをbackgroundで実行します．
+`yes`は停止操作を試すために終了せず動き続け，`yes &`ではbackground実行します．
+実行中に`Ctrl+Z`を入力すると
 停止し，`jobs`で状態を確認して`fg`で再開できます．`Ctrl+C`はforeground jobを
 終了します．これは協調式ジョブ制御なので，プロセスが`yield`またはsystem callを
 呼んだタイミングで操作が反映されます．
+
+PIDを省略した`fg`と`bg`は直近のjobを対象にします．`workers`のjobは2 workerを
+まとめて保持するため，両方を同時に再開します．PIDを省略した`wait`はシェルの
+全子プロセスを待機して終了状態を回収します．
+
+シェルの入力中に`Ctrl+C`を押すと現在の行を破棄して新しいプロンプトへ戻ります．
+左右の矢印キーはカーソル移動，上下の矢印キーは直近8件のコマンド履歴を移動します．
+カーソルの途中での文字挿入とBackspaceにも対応しています．
+
+行末の`&`はシェルで共通に解析され，`yes`や`workers`のようにU-modeプロセスとして
+起動できるコマンドをbackground実行します．`ps`などのシェル内蔵コマンドは独立した
+プロセスではないため，`&`を付けるとエラーになります．
 
 QEMUを終了するには，`Ctrl-a`を押してから`x`を押します．
 

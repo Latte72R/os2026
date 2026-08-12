@@ -11,14 +11,16 @@ const SYS_PROC_INFO: usize = 6;
 const SYS_SHUTDOWN: usize = 7;
 const SYS_PROCESS_CONTROL: usize = 8;
 
-const PROGRAM_DEMO: usize = 1;
+const PROGRAM_WORKERS: usize = 1;
 const PROGRAM_YES: usize = 2;
 const PROCESS_TERMINATE: usize = 0;
 const PROCESS_STOP: usize = 1;
 const PROCESS_CONTINUE: usize = 2;
 const PROCESS_INTERRUPT: usize = 3;
+const PROCESS_KILL: usize = 4;
 const EXIT_SIGTERM: isize = 143;
 const EXIT_SIGINT: isize = 130;
+const EXIT_SIGKILL: isize = 137;
 const ERROR: usize = usize::MAX;
 
 pub fn handle(frame: &mut TrapFrame) {
@@ -37,7 +39,7 @@ pub fn handle(frame: &mut TrapFrame) {
         SYS_EXIT => process::exit_process(frame.a0 as isize),
         SYS_SPAWN => {
             let argument = match frame.a0 {
-                PROGRAM_DEMO => Some(frame.a1),
+                PROGRAM_WORKERS => Some(frame.a1),
                 PROGRAM_YES => Some(usize::MAX),
                 _ => None,
             };
@@ -85,6 +87,7 @@ pub fn handle(frame: &mut TrapFrame) {
                 PROCESS_STOP => Some(ProcessControl::Stop),
                 PROCESS_CONTINUE => Some(ProcessControl::Continue),
                 PROCESS_INTERRUPT => Some(ProcessControl::Terminate(EXIT_SIGINT)),
+                PROCESS_KILL => Some(ProcessControl::Terminate(EXIT_SIGKILL)),
                 _ => None,
             };
             frame.a0 = control
