@@ -6,7 +6,8 @@ Rustで実装された，RV64IMAC 向けのシンプルなOSです．
 
 OpenSBI上のS-modeカーネルと，U-modeで動く対話シェルを実装しています．
 ページングを使わないBareアドレス空間で，ECALL，独立したkernel/user stack，
-協調式round-robin，spawn，yield，exit，waitを実際に操作できます．
+協調式round-robin，spawn，yield，exit，waitに加え，foreground jobの停止・再開を
+実際に操作できます．
 
 ## 必要なツール
 
@@ -38,13 +39,25 @@ make clean  # ビルド生成物を削除
 help
 echo hello
 ps
-run demo
-wait 2
+jobs
+demo
+demo &
+yes
+fg 3
+bg 3
+kill 3
+kill -STOP 3
+kill -CONT 3
+wait 3
 clear
-shutdown
+poweroff
 ```
 
-`run demo`は2つのU-mode workerを生成し，明示的な`yield`による切替を表示します．
+`demo`はU-mode workerをforegroundで実行し，`demo &`はbackgroundで実行します．
+`yes`は停止操作を試すために終了せず動き続けます．実行中に`Ctrl+Z`を入力すると
+停止し，`jobs`で状態を確認して`fg`で再開できます．`Ctrl+C`はforeground jobを
+終了します．これは協調式ジョブ制御なので，プロセスが`yield`またはsystem callを
+呼んだタイミングで操作が反映されます．
 
 QEMUを終了するには，`Ctrl-a`を押してから`x`を押します．
 

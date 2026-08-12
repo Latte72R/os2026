@@ -1,5 +1,5 @@
 use crate::arch::trap::TrapFrame;
-use crate::process::{self, ProcessState, WaitResult};
+use crate::process::{self, ProcessControl, ProcessState, WaitResult};
 
 const SYS_PUTCHAR: usize = 0;
 const SYS_GETCHAR: usize = 1;
@@ -9,8 +9,16 @@ const SYS_SPAWN: usize = 4;
 const SYS_WAIT: usize = 5;
 const SYS_PROC_INFO: usize = 6;
 const SYS_SHUTDOWN: usize = 7;
+const SYS_PROCESS_CONTROL: usize = 8;
 
 const PROGRAM_DEMO: usize = 1;
+const PROGRAM_YES: usize = 2;
+const PROCESS_TERMINATE: usize = 0;
+const PROCESS_STOP: usize = 1;
+const PROCESS_CONTINUE: usize = 2;
+const PROCESS_INTERRUPT: usize = 3;
+const EXIT_SIGTERM: isize = 143;
+const EXIT_SIGINT: isize = 130;
 const ERROR: usize = usize::MAX;
 
 pub fn handle(frame: &mut TrapFrame) {
@@ -28,11 +36,14 @@ pub fn handle(frame: &mut TrapFrame) {
         }
         SYS_EXIT => process::exit_process(frame.a0 as isize),
         SYS_SPAWN => {
-            frame.a0 = if frame.a0 == PROGRAM_DEMO {
-                process::create_user_process(frame.a1).unwrap_or(ERROR)
-            } else {
-                ERROR
+            let argument = match frame.a0 {
+                PROGRAM_DEMO => Some(frame.a1),
+                PROGRAM_YES => Some(usize::MAX),
+                _ => None,
             };
+            frame.a0 = argument
+                .and_then(process::create_user_process)
+                .unwrap_or(ERROR);
         }
         SYS_WAIT => match process::try_wait_process(frame.a0) {
             Ok(WaitResult::Running) => {
@@ -42,6 +53,10 @@ pub fn handle(frame: &mut TrapFrame) {
             Ok(WaitResult::Exited(code)) => {
                 frame.a0 = 1;
                 frame.a1 = code as usize;
+            }
+            Ok(WaitResult::Stopped) => {
+                frame.a0 = 2;
+                frame.a1 = 0;
             }
             Err(_) => {
                 frame.a0 = ERROR;
@@ -57,12 +72,25 @@ pub fn handle(frame: &mut TrapFrame) {
                     ProcessState::Idle => 0,
                     ProcessState::Runnable => 1,
                     ProcessState::Exited(_) => 2,
+                    ProcessState::Stopped => 3,
                 };
             } else {
                 frame.a0 = ERROR;
             }
         }
         SYS_SHUTDOWN => crate::platform::shutdown(true),
+        SYS_PROCESS_CONTROL => {
+            let control = match frame.a1 {
+                PROCESS_TERMINATE => Some(ProcessControl::Terminate(EXIT_SIGTERM)),
+                PROCESS_STOP => Some(ProcessControl::Stop),
+                PROCESS_CONTINUE => Some(ProcessControl::Continue),
+                PROCESS_INTERRUPT => Some(ProcessControl::Terminate(EXIT_SIGINT)),
+                _ => None,
+            };
+            frame.a0 = control
+                .and_then(|control| process::control_process(frame.a0, control).ok())
+                .map_or(ERROR, |()| 0);
+        }
         _ => frame.a0 = ERROR,
     }
 }

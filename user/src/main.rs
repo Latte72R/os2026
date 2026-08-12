@@ -14,8 +14,16 @@ const SYS_SPAWN: usize = 4;
 const SYS_WAIT: usize = 5;
 const SYS_PROC_INFO: usize = 6;
 const SYS_SHUTDOWN: usize = 7;
+const SYS_PROCESS_CONTROL: usize = 8;
 
 const PROGRAM_DEMO: usize = 1;
+const PROGRAM_YES: usize = 2;
+const PROCESS_TERMINATE: usize = 0;
+const PROCESS_STOP: usize = 1;
+const PROCESS_CONTINUE: usize = 2;
+const PROCESS_INTERRUPT: usize = 3;
+const CTRL_C: u8 = 0x03;
+const CTRL_Z: u8 = 0x1a;
 const LINE_MAX: usize = 128;
 const PROCESS_SLOTS: usize = 8;
 
@@ -71,12 +79,17 @@ fn getchar() -> Option<u8> {
     (value >= 0).then_some(value as u8)
 }
 
-fn spawn_demo(worker: usize) -> isize {
-    syscall(SYS_SPAWN, PROGRAM_DEMO, worker)
+fn spawn_process(program: usize, argument: usize) -> isize {
+    syscall(SYS_SPAWN, program, argument)
+}
+
+fn control_process(pid: usize, control: usize) -> bool {
+    syscall(SYS_PROCESS_CONTROL, pid, control) == 0
 }
 
 enum WaitResult {
     Running,
+    Stopped,
     Exited(isize),
     Error,
 }
@@ -96,6 +109,7 @@ fn wait_process(pid: usize) -> WaitResult {
     match status {
         0 => WaitResult::Running,
         1 => WaitResult::Exited(exit_code),
+        2 => WaitResult::Stopped,
         _ => WaitResult::Error,
     }
 }
@@ -188,25 +202,106 @@ fn command_ps() {
             0 => "idle",
             1 => "runnable",
             2 => "exited",
+            3 => "stopped",
             _ => "?",
         });
         print("\r\n");
     }
 }
 
-fn command_run_demo() {
-    let first = spawn_demo(1);
-    let second = spawn_demo(2);
-    if first < 0 || second < 0 {
-        print("failed to spawn demo\r\n");
+fn report_exit(pid: usize, code: isize) {
+    print("[");
+    print_number(pid);
+    match code {
+        130 => print("] interrupted\r\n"),
+        143 => print("] terminated\r\n"),
+        _ => {
+            print("] exited ");
+            if code < 0 {
+                putchar(b'-');
+                print_number(code.unsigned_abs());
+            } else {
+                print_number(code as usize);
+            }
+            print("\r\n");
+        }
+    }
+}
+
+fn foreground(pid: usize, last_job: &mut Option<usize>) {
+    loop {
+        match wait_process(pid) {
+            WaitResult::Running => {
+                match getchar() {
+                    Some(CTRL_C) => {
+                        print("^C\r\n");
+                        if !control_process(pid, PROCESS_INTERRUPT) {
+                            print("failed to interrupt process\r\n");
+                            return;
+                        }
+                    }
+                    Some(CTRL_Z) => {
+                        print("^Z\r\n");
+                        if control_process(pid, PROCESS_STOP) {
+                            *last_job = Some(pid);
+                            print("[");
+                            print_number(pid);
+                            print("] stopped\r\n");
+                        } else {
+                            print("failed to stop process\r\n");
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+                yield_process();
+            }
+            WaitResult::Stopped => {
+                *last_job = Some(pid);
+                print("[");
+                print_number(pid);
+                print("] stopped\r\n");
+                return;
+            }
+            WaitResult::Exited(code) => {
+                if *last_job == Some(pid) {
+                    *last_job = None;
+                }
+                report_exit(pid, code);
+                return;
+            }
+            WaitResult::Error => {
+                print("not a child process\r\n");
+                return;
+            }
+        }
+    }
+}
+
+fn start_job(
+    program: usize,
+    argument: usize,
+    name: &str,
+    background: bool,
+    last_job: &mut Option<usize>,
+) {
+    let pid = spawn_process(program, argument);
+    if pid < 0 {
+        print("failed to spawn process\r\n");
         return;
     }
 
-    print("started demo workers PID ");
-    print_number(first as usize);
-    print(" and ");
-    print_number(second as usize);
+    let pid = pid as usize;
+    print("[");
+    print_number(pid);
+    print("] running ");
+    print(name);
     print("\r\n");
+    *last_job = Some(pid);
+
+    if !background {
+        foreground(pid, last_job);
+    }
 }
 
 fn command_wait(argument: &[u8]) {
@@ -218,17 +313,14 @@ fn command_wait(argument: &[u8]) {
     loop {
         match wait_process(pid) {
             WaitResult::Running => yield_process(),
-            WaitResult::Exited(code) => {
+            WaitResult::Stopped => {
                 print("PID ");
                 print_number(pid);
-                print(" exited with ");
-                if code < 0 {
-                    putchar(b'-');
-                    print_number(code.unsigned_abs());
-                } else {
-                    print_number(code as usize);
-                }
-                print("\r\n");
+                print(" is stopped\r\n");
+                return;
+            }
+            WaitResult::Exited(code) => {
+                report_exit(pid, code);
                 return;
             }
             WaitResult::Error => {
@@ -239,14 +331,126 @@ fn command_wait(argument: &[u8]) {
     }
 }
 
-fn execute_command(line: &[u8]) {
+fn command_jobs() {
+    let mut found = false;
+    for slot in 0..PROCESS_SLOTS {
+        let Some(info) = process_info(slot) else {
+            continue;
+        };
+        if info.parent != 1 {
+            continue;
+        }
+
+        found = true;
+        print("[");
+        print_number(info.pid);
+        print("] ");
+        print(match info.state {
+            1 => "running",
+            2 => "exited",
+            3 => "stopped",
+            _ => "?",
+        });
+        print("\r\n");
+    }
+    if !found {
+        print("no jobs\r\n");
+    }
+}
+
+fn job_pid(argument: &[u8], last_job: Option<usize>, usage: &str) -> Option<usize> {
+    let pid = if argument.is_empty() {
+        last_job
+    } else {
+        parse_number(argument)
+    };
+
+    if pid.is_none() {
+        print(usage);
+        print("\r\n");
+    }
+    pid
+}
+
+fn command_fg(argument: &[u8], last_job: &mut Option<usize>) {
+    let Some(pid) = job_pid(argument, *last_job, "usage: fg [pid]") else {
+        return;
+    };
+    if !control_process(pid, PROCESS_CONTINUE) {
+        print("failed to continue process\r\n");
+        return;
+    }
+    foreground(pid, last_job);
+}
+
+fn command_bg(argument: &[u8], last_job: &mut Option<usize>) {
+    let Some(pid) = job_pid(argument, *last_job, "usage: bg [pid]") else {
+        return;
+    };
+    if control_process(pid, PROCESS_CONTINUE) {
+        *last_job = Some(pid);
+        print("[");
+        print_number(pid);
+        print("] running\r\n");
+    } else {
+        print("failed to continue process\r\n");
+    }
+}
+
+fn command_kill(argument: &[u8], last_job: &mut Option<usize>) {
+    let (control, pid_bytes) = if let Some(pid) = argument.strip_prefix(b"-STOP ") {
+        (PROCESS_STOP, pid)
+    } else if let Some(pid) = argument.strip_prefix(b"-CONT ") {
+        (PROCESS_CONTINUE, pid)
+    } else {
+        (PROCESS_TERMINATE, argument)
+    };
+    let Some(pid) = parse_number(pid_bytes) else {
+        print("usage: kill [-STOP|-CONT] <pid>\r\n");
+        return;
+    };
+
+    if !control_process(pid, control) {
+        print("failed to control process\r\n");
+        return;
+    }
+
+    if control == PROCESS_STOP {
+        *last_job = Some(pid);
+        print("[");
+        print_number(pid);
+        print("] stopped\r\n");
+    } else if control == PROCESS_CONTINUE {
+        *last_job = Some(pid);
+        print("[");
+        print_number(pid);
+        print("] running\r\n");
+    } else {
+        if *last_job == Some(pid) {
+            *last_job = None;
+        }
+        let _ = wait_process(pid);
+        print("[");
+        print_number(pid);
+        print("] terminated\r\n");
+    }
+}
+
+fn execute_command(line: &[u8], last_job: &mut Option<usize>) {
     match line {
         b"" => {}
-        b"help" => print("help | echo <text> | ps | run demo | wait <pid> | clear | shutdown\r\n"),
+        b"help" => {
+            print("echo <text>  ps  jobs  demo [&]  yes  wait <pid>\r\n");
+            print("fg [pid]  bg [pid]  kill [-STOP|-CONT] <pid>  clear  poweroff\r\n");
+            print("Ctrl-C interrupts and Ctrl-Z stops the foreground job\r\n");
+        }
         b"ps" => command_ps(),
-        b"run demo" => command_run_demo(),
+        b"jobs" => command_jobs(),
+        b"demo" => start_job(PROGRAM_DEMO, 1, "demo", false, last_job),
+        b"demo &" => start_job(PROGRAM_DEMO, 1, "demo", true, last_job),
+        b"yes" => start_job(PROGRAM_YES, 0, "yes", false, last_job),
         b"clear" => print("\x1b[2J\x1b[H"),
-        b"shutdown" => {
+        b"poweroff" | b"shutdown" => {
             let _ = syscall(SYS_SHUTDOWN, 0, 0);
         }
         _ if line.starts_with(b"echo ") => {
@@ -256,6 +460,11 @@ fn execute_command(line: &[u8]) {
             print("\r\n");
         }
         _ if line.starts_with(b"wait ") => command_wait(&line[5..]),
+        b"fg" => command_fg(b"", last_job),
+        _ if line.starts_with(b"fg ") => command_fg(&line[3..], last_job),
+        b"bg" => command_bg(b"", last_job),
+        _ if line.starts_with(b"bg ") => command_bg(&line[3..], last_job),
+        _ if line.starts_with(b"kill ") => command_kill(&line[5..], last_job),
         _ => print("unknown command\r\n"),
     }
 }
@@ -265,10 +474,11 @@ fn shell() -> ! {
     print("type 'help' for commands\r\n");
 
     let mut line = [0u8; LINE_MAX];
+    let mut last_job = None;
     loop {
         print("vertos> ");
         let length = read_line(&mut line);
-        execute_command(&line[..length]);
+        execute_command(&line[..length], &mut last_job);
     }
 }
 
@@ -288,10 +498,19 @@ fn demo_worker(worker: usize) -> ! {
     }
 }
 
+fn yes_worker() -> ! {
+    loop {
+        print("y\r\n");
+        yield_process();
+    }
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn main(argument: usize) -> ! {
     if argument == 0 {
         shell()
+    } else if argument == usize::MAX {
+        yes_worker()
     } else {
         demo_worker(argument)
     }

@@ -15,7 +15,15 @@ pub type ProcessEntry = extern "C" fn() -> isize;
 pub enum ProcessState {
     Idle,
     Runnable,
+    Stopped,
     Exited(isize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessControl {
+    Terminate(isize),
+    Stop,
+    Continue,
 }
 
 #[derive(Debug)]
@@ -128,6 +136,7 @@ struct SwitchContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaitResult {
     Running,
+    Stopped,
     Exited(isize),
 }
 
@@ -282,6 +291,8 @@ impl ProcessManager {
         match child.state {
             ProcessState::Runnable => Ok(WaitResult::Running),
 
+            ProcessState::Stopped => Ok(WaitResult::Stopped),
+
             ProcessState::Exited(code) => {
                 self.processes[index] = None;
                 Ok(WaitResult::Exited(code))
@@ -289,6 +300,41 @@ impl ProcessManager {
 
             ProcessState::Idle => Err(Error::NotAChildProcess),
         }
+    }
+
+    fn control_process(
+        &mut self,
+        requester_pid: usize,
+        pid: usize,
+        control: ProcessControl,
+    ) -> Result<()> {
+        let process = self
+            .processes
+            .iter_mut()
+            .flatten()
+            .find(|process| process.pid == pid)
+            .ok_or(Error::NoSuchProcess)?;
+
+        if process.parent_pid != Some(requester_pid) {
+            return Err(Error::NotAChildProcess);
+        }
+
+        process.state = match (process.state, control) {
+            (ProcessState::Runnable | ProcessState::Stopped, ProcessControl::Terminate(code)) => {
+                ProcessState::Exited(code)
+            }
+            (ProcessState::Runnable | ProcessState::Stopped, ProcessControl::Stop) => {
+                ProcessState::Stopped
+            }
+            (ProcessState::Runnable | ProcessState::Stopped, ProcessControl::Continue) => {
+                ProcessState::Runnable
+            }
+            (ProcessState::Idle | ProcessState::Exited(_), _) => {
+                return Err(Error::InvalidProcessState);
+            }
+        };
+
+        Ok(())
     }
 }
 
@@ -448,6 +494,16 @@ pub fn try_wait_process(child_pid: usize) -> Result<WaitResult> {
     manager.try_wait(parent_pid, child_pid)
 }
 
+pub fn control_process(pid: usize, control: ProcessControl) -> Result<()> {
+    let mut root = ROOT_PROCESS_MANAGER.lock();
+    let manager = root.as_mut().expect("process manager is not initialized");
+    let requester_pid = manager.current_pid();
+
+    manager.control_process(requester_pid, pid, control)?;
+    manager.release_exited_resources();
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProcessInfo {
     pub pid: usize,
@@ -556,6 +612,31 @@ mod tests {
         // PID 2 → PID 1
         manager.current_index = 2;
         assert_eq!(manager.next_runnable_index(), 1);
+    }
+
+    #[test_case]
+    fn stopped_process_is_skipped_until_continued() {
+        let mut manager = ProcessManager::new();
+        let pid1 = manager.create_process(return_zero).unwrap();
+        manager.current_index = 1;
+        let pid2 = manager.create_process(return_zero).unwrap();
+
+        manager
+            .control_process(pid1, pid2, ProcessControl::Stop)
+            .unwrap();
+        assert_eq!(manager.next_runnable_index(), 1);
+        assert_eq!(manager.try_wait(pid1, pid2), Ok(WaitResult::Stopped));
+
+        manager
+            .control_process(pid1, pid2, ProcessControl::Continue)
+            .unwrap();
+        assert_eq!(manager.next_runnable_index(), 2);
+        assert_eq!(manager.try_wait(pid1, pid2), Ok(WaitResult::Running));
+
+        manager
+            .control_process(pid1, pid2, ProcessControl::Terminate(143))
+            .unwrap();
+        assert_eq!(manager.try_wait(pid1, pid2), Ok(WaitResult::Exited(143)));
     }
 
     #[test_case]

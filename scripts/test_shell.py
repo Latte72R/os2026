@@ -38,16 +38,19 @@ class ShellTest:
             self.output.extend(chunk)
 
     def command(self, command: str, expected: bytes) -> None:
+        self.send(command.encode("ascii") + b"\r", expected)
+
+    def send(self, data: bytes, expected: bytes) -> None:
         assert self.process.stdin is not None
         start = len(self.output)
-        self.process.stdin.write(command.encode("ascii") + b"\r")
+        self.process.stdin.write(data)
         self.process.stdin.flush()
 
         deadline = time.monotonic() + 10.0
         while expected not in self.output[start:]:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise TimeoutError(f"command {command!r} did not produce {expected!r}")
+                raise TimeoutError(f"input {data!r} did not produce {expected!r}")
             self.read_more(remaining)
 
     def read_more(self, timeout: float) -> None:
@@ -62,7 +65,7 @@ class ShellTest:
 
     def finish(self) -> None:
         assert self.process.stdin is not None
-        self.process.stdin.write(b"shutdown\r")
+        self.process.stdin.write(b"poweroff\r")
         self.process.stdin.flush()
         return_code = self.process.wait(timeout=10.0)
         if return_code != 0:
@@ -85,11 +88,20 @@ def main() -> int:
     test = ShellTest(sys.argv[1])
     try:
         test.read_until(b"vertos> ")
-        test.command("help", b"help | echo <text>")
+        test.command("help", b"Ctrl-C interrupts and Ctrl-Z stops")
         test.command("ps", b"1    0    runnable")
-        test.command("run demo", b"started demo workers PID 2 and 3")
-        test.command("wait 2", b"PID 2 exited with 1")
-        test.command("wait 3", b"PID 3 exited with 2")
+        test.command("demo", b"[2] exited 1\r\r\nvertos> ")
+        test.command("yes", b"[3] running yes")
+        test.send(b"\x1a", b"[3] stopped\r\r\nvertos> ")
+        test.command("jobs", b"[3] stopped")
+        test.command("fg 3", b"y\r\r\n")
+        test.send(b"\x03", b"[3] interrupted\r\r\nvertos> ")
+        test.command("jobs", b"no jobs")
+        test.command("yes", b"[4] running yes")
+        test.send(b"\x1a", b"[4] stopped\r\r\nvertos> ")
+        test.command("kill 4", b"[4] terminated")
+        test.command("demo &", b"[5] running demo")
+        test.command("wait 5", b"[5] exited 1")
         test.command("echo hello", b"echo hello\r\r\nhello\r\r\nvertos> ")
         test.finish()
     except Exception as error:
@@ -99,7 +111,7 @@ def main() -> int:
     finally:
         test.close()
 
-    print("PASS: U-mode shell and cooperative processes")
+    print("PASS: U-mode shell, job control, and cooperative processes")
     return 0
 
 
