@@ -86,8 +86,6 @@ pub fn write_sscratch(value: usize) {
     }
 }
 
-const SATP_MODE_SV39: usize = 8 << 60;
-
 #[inline]
 pub fn read_satp() -> usize {
     let value: usize;
@@ -100,31 +98,6 @@ pub fn read_satp() -> usize {
     }
 
     value
-}
-
-#[inline]
-pub unsafe fn write_satp(value: usize) {
-    unsafe {
-        core::arch::asm!(
-            "csrw satp, {value}",
-            value = in(reg) value,
-        );
-    }
-}
-
-#[inline]
-pub fn sfence_vma() {
-    unsafe {
-        core::arch::asm!("sfence.vma");
-    }
-}
-
-pub fn make_satp_sv39(root_address: usize) -> usize {
-    const PAGE_SIZE: usize = 4096;
-
-    assert_eq!(root_address % PAGE_SIZE, 0);
-
-    SATP_MODE_SV39 | (root_address / PAGE_SIZE)
 }
 
 #[cfg(test)]
@@ -179,5 +152,10 @@ mod tests {
 
         // stvecのBASEは4-byte alignedである。
         assert_eq!(base % 4, 0);
+    }
+
+    #[test_case]
+    fn paging_remains_disabled() {
+        assert_eq!(read_satp(), 0);
     }
 }

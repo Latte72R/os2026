@@ -32,6 +32,9 @@ SECTIONS
 
   . = ALIGN(4096);
   __heap_start = .;
-  . += 8M;
+  . += 4M;
   __heap_end = .;
+
+  __ram_end = 0x80800000;
+  ASSERT(__heap_end <= __ram_end, "kernel image and heap exceed beigecore RAM")
 }
