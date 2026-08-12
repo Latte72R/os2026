@@ -6,6 +6,9 @@ KERNEL := target/$(TARGET)/$(PROFILE)/$(PROJECT)
 LINKER_SCRIPT := linker/kernel.ld
 RUSTFLAGS := -C link-arg=-T$(LINKER_SCRIPT)
 
+USER_ELF := target/$(TARGET)/$(PROFILE)/shell
+USER_BIN := target/$(TARGET)/$(PROFILE)/shell.bin
+
 .DEFAULT_GOAL := help
 
 .PHONY: help fmt check build run test clean

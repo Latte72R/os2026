@@ -5,7 +5,18 @@ edition = "2024"
 
 [dependencies]
 
+[workspace]
+members = [".", "user"]
+default-members = ["."]
+resolver = "3"
+
 [[bin]]
 name = "vertos"
 test = false
 harness = false
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
