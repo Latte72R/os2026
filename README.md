@@ -40,6 +40,11 @@ scripts/    QEMU起動スクリプト
 src/        Rustで実装したカーネル本体
 ```
 
+## beigecore との統合
+
+U-mode プロセスと対話シェルを beigecore 上で動かすための構成と実装順序は
+[beigecore 統合向け OS 設計](./docs/beigecore-integration.md)にまとめています．
+
 ## ライセンス
 
 このプロジェクトは[MIT License](./LICENSE)のもとで公開されています．
