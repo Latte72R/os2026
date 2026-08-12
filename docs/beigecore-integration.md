@@ -8,8 +8,9 @@ CPU、SoC、OpenSBI、メモリマップの設計は beigecore リポジトリ�
 
 ## 方針
 
-現在実装済みの例外処理、First Fit Allocator、Sv39 page table、固定長プロセス
-テーブル、コンテキストスイッチを育てる。別の大規模フレームワークへの置き換えは
+現在実装済みの例外処理、First Fit Allocator、固定長プロセステーブル、
+コンテキストスイッチを育てる。Sv39 page table は最初の完成点から外し、
+`satp.MODE=Bare` の no-MMU OS とする。別の大規模フレームワークへの置き換えは
 行わない。
 
 最初の完成点では、ファイルシステムや動的 ELF loader を作らず、ビルド時に組み
@@ -21,7 +22,7 @@ CPU、SoC、OpenSBI、メモリマップの設計は beigecore リポジトリ�
 
 - U-mode/S-mode/M-mode 間の遷移
 - syscall と trap frame
-- プロセスごとの Sv39 address space
+- U-mode と S-mode の syscall/trap 境界
 - kernel stack と user stack
 - context switch
 - spawn、exit、wait と PID
@@ -48,31 +49,32 @@ wait queue や `Blocked` 状態を追加しない。必要性が生じた時点�
 - kernel stack
 - user register/trap context
 - user stack
-- address space
 - 組み込み program ID と初期引数
 
 trap entry は既存の `sscratch` を用いる方式を維持する。U-mode 実行中は
 `sscratch=kernel_stack_top`、S-mode 実行中は `sscratch=0` とする。プロセス切替時
-には次プロセスの address space、kernel stack、user context をまとめて切り替える。
+には次プロセスの kernel stack と user context をまとめて切り替える。
 
-## アドレス空間
+## Bare 物理アドレス空間
 
 カーネルは `0x8020_0000` にリンクする。8 MiB の物理 RAM に収めるため、初期
 ヒープは 4 MiB 以下にし、linker script に RAM 終端を越えない ASSERT を置く。
 
-各ユーザープロセスは同じ仮想配置を持つが、異なる物理ページへ割り当てる。
+`satp` はゼロのままとし、カーネルと全ユーザープロセスは同じ物理アドレス空間を
+共有する。ユーザーコードは実 RAM 内の固定物理アドレスへリンクして一度だけ配置し、
+各プロセスには独立した kernel stack、user stack、register context を割り当てる。
 
-| 仮想範囲 | 用途 | 権限 |
-| --- | --- | --- |
-| `0x0100_0000...` | user text/rodata/data | section に応じた U+R/W/X |
-| user image 後方 | user stack | U+R+W、guard page あり |
-| `0x8020_0000...` | kernel | S-mode のみ |
+| 物理範囲 | 用途 |
+| --- | --- |
+| `0x8000_0000...` | OpenSBI firmware |
+| `0x8020_0000...` | vertos kernel、kernel stack、heap |
+| RAM 上部の予約領域 | 組み込み user image と user stack |
 
-カーネル全体を RWX で map せず、linker symbol を使って text は RX、rodata は R、
-data/bss/heap/kernel stack は RW に分ける。user pointer を扱う syscall は範囲と
-ページ権限を検証する。
+MMU/PMP がないため、U-mode から kernel memory、他プロセスの memory、MMIO への
+アクセスをハードウェアでは禁止できない。これは最初の完成点の明示的な制約とし、
+「保護されたプロセス」ではなく「独立 context を持つ U-mode task」と呼ぶ。
 
-最初のユーザープログラムは raw binary としてカーネルへ埋め込み、固定仮想
+最初のユーザープログラムは raw binary としてカーネルへ埋め込み、固定物理
 アドレスへ copy する。ELF parser と filesystem は導入しない。program registry
 は固定の enum と byte slice の表で表現する。
 
@@ -147,8 +149,8 @@ QEMU テストは現在の custom test framework を維持する。単体テス�
 カーネルレベルテストを追加する。
 
 - U-mode entry と syscall return
-- user ECALL、page fault、illegal instruction の区別
-- address space ごとの user page 分離
+- user ECALL と illegal instruction の区別
+- 複数 task の独立した register context と stack
 - spawn/yield/exit/wait の状態遷移
 - 不正 syscall 番号と不正 program ID のエラー処理
 
@@ -159,7 +161,7 @@ beigecore 側の E2E では入力を pipe し、少なくとも boot banner、sh
 
 1. SBI getchar と console abstraction を追加する。
 2. trap handler で U-mode ECALL を処理できるようにする。
-3. Process に user context、user pages、kernel stack top を追加する。
+3. Process に user context、user stack、kernel stack top を追加する。
 4. raw user image loader と U-mode entry を実装する。
 5. syscall ABI と user library を実装する。
 6. shell と worker を実装し、QEMU 上で完成させる。
@@ -174,6 +176,7 @@ beigecore 側の E2E では入力を pipe し、少なくとも boot banner、sh
 - network
 - 複数 HART と SMP synchronization
 - timer preemption
+- Sv39、PTW、プロセス間メモリ保護
 - GUI
 
 これらは対話シェルとユーザープロセスが自作 CPU 上で安定動作した後に、学習効果と
