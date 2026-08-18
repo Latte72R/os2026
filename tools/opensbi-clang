@@ -1,0 +1,6 @@
+#!/bin/sh
+
+# OpenSBI v1.9 trips Clang's flow analysis in sbi_trap_ldst.c when built
+# without floating-point support.  Keep upstream -Werror for every other
+# diagnostic while allowing this known sometimes-uninitialized warning.
+exec clang-22 "$@" -Wno-error=sometimes-uninitialized
