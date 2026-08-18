@@ -16,6 +16,12 @@ OpenSBI上のS-modeカーネルと，U-modeで動く対話シェルを実装し�
 
 ## 使い方
 
+リポジトリをcloneした後，OpenSBI submoduleを取得します．
+
+```sh
+git submodule update --init --recursive
+```
+
 カーネルのビルドとQEMUでの実行には，それぞれ次のコマンドを使用します．
 
 ```sh
@@ -67,6 +73,7 @@ boot/       起動処理と例外エントリのアセンブリ
 linker/     カーネル用リンカスクリプト
 scripts/    QEMU起動スクリプト
 src/        Rustで実装したカーネル本体
+third_party/ 外部依存（OpenSBI v1.9 submodule）
 ```
 
 ## ライセンス
